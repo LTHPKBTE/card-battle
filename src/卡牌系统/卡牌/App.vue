@@ -168,6 +168,7 @@
           <AiContextField v-model:enabled="aiWithHistory" v-model:count="aiHistory" />
           <div v-if="aiError" class="clp-modal-error">{{ aiError }}</div>
           <AiSettingsLink />
+          <AiPromptLink />
           <div class="clp-modal-actions">
             <button class="clp-action primary" type="button" :disabled="aiBusy" @click="runAiCard">
               {{ aiBusy ? '生成中…' : '生成' }}
@@ -187,6 +188,7 @@ import { aiStopAll } from '../AI/客户端';
 import { 生成卡牌 } from '../AI/任务';
 import AiContextField from '../AI/components/AiContextField.vue';
 import AiSettingsLink from '../AI/components/AiSettingsLink.vue';
+import AiPromptLink from '../AI/components/AiPromptLink.vue';
 import {
   createCard,
   deleteCardById,
@@ -661,6 +663,8 @@ window.addEventListener('beforeunload', commitAndSave);
 </script>
 
 <style lang="scss" scoped>
+@use '../共用/稀有度' as *;
+
 .clp-overlay {
   --cl-bg: #12141c;
   --cl-panel: rgb(var(--panel-tint, 22 24 33) / var(--panel-alpha, 0.92));
@@ -1164,8 +1168,7 @@ window.addEventListener('beforeunload', commitAndSave);
 }
 
 .rarity-UR {
-  background: linear-gradient(45deg, #89f7fe, #66a6ff);
-  color: #002d62;
+  @include rare-shimmer;
 }
 
 .clp-empty {

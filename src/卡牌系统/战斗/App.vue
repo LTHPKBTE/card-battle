@@ -20,9 +20,6 @@
         <button class="bt-close" type="button" @click="requestClose">✕ 关闭</button>
       </header>
 
-      <!-- 换手 / 换回合时整块面板扫过一道光 (key 一变就重播) -->
-      <div v-if="sweep" :key="`sweep${sweep}`" class="bt-sweep" />
-
       <!-- 垫底色 / 模糊半径 (三个面板共用同一份设置) -->
       <PanelLookSettings v-if="showLook" @close="showLook = false" />
 
@@ -31,6 +28,14 @@
         <label class="bt-switch" :title="practice ? '演习模式本来就是两边都能操作' : ''">
           <input type="checkbox" :checked="bothSides" :disabled="practice" @change="toggleBothSides" />
           <span>双方操控 (玩家同时操作两边)</span>
+        </label>
+        <label
+          v-if="practice"
+          class="bt-switch"
+          title="演习不写变量, 所以可以随时改; 正式战斗的能量在开局设置里定死"
+        >
+          <input type="checkbox" :checked="energySwitch" @change="togglePracticeEnergy" />
+          <span>上场消耗能量</span>
         </label>
         <label class="bt-switch">
           <input v-model="dragEnabled" type="checkbox" />
@@ -651,6 +656,7 @@ import {
   requestAIDecision,
   resetPracticeSession,
   setControlBothSides,
+  setPracticeEnergyEnabled,
   startBattleSession,
   startPracticeSession,
   type BattleMode,
@@ -1761,6 +1767,25 @@ async function toggleBothSides(event: Event) {
   });
 }
 
+/**
+ * 演习里开关能量系统.
+ *
+ * 正式战斗的能量在开局时定死 —— 那份配置跟着变量快照走, 中途改会和 AI 读到的局面说法对不上.
+ * 演习不写变量, 所以可以随手开关, 方便对比「有能量 / 没能量」两套规则的手感;
+ * 开关值也会写回演习配置, 「重置演习」后保持不变.
+ */
+function togglePracticeEnergy(event: Event) {
+  const enabled = (event.target as HTMLInputElement).checked;
+  energySwitch.value = enabled;
+  const next = setPracticeEnergyEnabled(enabled);
+  message.value = !next
+    ? '只有演习模式能中途改能量设置'
+    : enabled
+      ? '能量已开启, 上场按卡面费用扣能量'
+      : '能量已关闭, 所有卡都能直接上场';
+  refresh();
+}
+
 async function askAI() {
   if (aiBusy.value) {
     return;
@@ -1839,8 +1864,6 @@ const fxSides = ref<Partial<Record<PlayerId, FxEntry>>>({});
 const ghosts = ref<{ side: PlayerId; slot: number; card_id: string }[]>([]);
 /** 墓地计数跳动 (每次有新卡进墓地就 +1, 当成 key 用) */
 const gravePulse = ref<Partial<Record<PlayerId, number>>>({});
-/** 换手 / 换回合时整块面板扫光的流水号 (0 = 不扫) */
-const sweep = ref(0);
 
 let snapshot: BattleSnap | null = null;
 let fxSerial = 0;
@@ -1920,7 +1943,6 @@ function resetFx() {
   fxSides.value = {};
   ghosts.value = [];
   gravePulse.value = {};
-  sweep.value = 0;
 }
 
 /** 下一次刷新只记录快照, 不播动画 */
@@ -2008,14 +2030,6 @@ function diffFx(before: BattleSnap, current: BattleState) {
     } else if (change > 0) {
       setSideFx(side, 'heal', `+${change}`);
     }
-  }
-
-  // 换手 / 换回合: 整块面板扫一道光
-  if (before.turn !== current.turn || before.active !== current.active || before.index !== current.active_index) {
-    sweep.value += 1;
-    armFx('sweep', 760, () => {
-      sweep.value = 0;
-    });
   }
 
   // 技能发动: 只有引擎日志能说清「哪张卡的哪个技能发动了」
@@ -2939,7 +2953,7 @@ onUnmounted(() => {
    动效
 
    卡牌自己的一次性动画 (抽卡 / 上场 / 攻击 / 受击 / 回复 / 技能 / 倒下) 写在
-   BattleCard.vue 里; 这里是面板级别的那几样: 头像掉血、墓地计数、换手扫光。
+   BattleCard.vue 里; 这里是面板级别的那几样: 头像掉血、墓地计数跳动。
    标记同样由 refresh() 时的快照对比产生, 到点自动撤掉。
    --------------------------------------------------------------------------- */
 
@@ -2985,17 +2999,6 @@ onUnmounted(() => {
 /* 有新卡进墓地: 计数跳一下 */
 .bt-pile.is-pulse {
   animation: bt-pile-pulse 0.6s ease-out;
-}
-
-/* 换手 / 换回合: 整块面板扫过一道光 */
-.bt-sweep {
-  position: absolute;
-  inset: 0;
-  z-index: 4;
-  pointer-events: none;
-  background: linear-gradient(100deg, transparent 42%, rgb(137 180 250 / 0.2) 50%, transparent 58%);
-  background-size: 250% 100%;
-  animation: bt-sweep 0.72s ease-out;
 }
 
 @keyframes bt-float {
@@ -3057,18 +3060,6 @@ onUnmounted(() => {
   100% {
     transform: scale(1);
     box-shadow: none;
-  }
-}
-
-@keyframes bt-sweep {
-  from {
-    background-position: 135% 0;
-    opacity: 1;
-  }
-
-  to {
-    background-position: -60% 0;
-    opacity: 0.5;
   }
 }
 </style>

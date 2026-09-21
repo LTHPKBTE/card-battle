@@ -280,12 +280,15 @@ export function canPayEnergy(state: BattleState, card: CardInstance): boolean {
  * 把一方当前的能量刷成曲线值 (在它自己行动开始时调).
  *
  * `refill: false` 时只把上限涨的那一点补上, 余额会存下来 (适合「资源累积」类规则).
+ *
+ * 参数直接收 `state` 而不是上下文: 演习模式中途改「能量开关」时手上没有上下文,
+ * 也要能立刻把两边的能量重算一遍.
  */
-function refreshEnergy(ctx: EngineContext, player: PlayerId): void {
-  const config = energyConfig(ctx.state);
-  const record = ctx.state.players[player];
+export function syncPlayerEnergy(state: BattleState, player: PlayerId): void {
+  const config = energyConfig(state);
+  const record = state.players[player];
   const before_max = Number.isFinite(record.energy_max) ? record.energy_max : 0;
-  const energy_max = energyMaxFor(ctx.state, ctx.state.turn);
+  const energy_max = energyMaxFor(state, state.turn);
   record.energy_max = energy_max;
   if (!config.enabled) {
     record.energy = 0;
@@ -1505,7 +1508,7 @@ function beginSide(ctx: EngineContext, side: PlayerId, side_index: number): void
     }
   }
   state.players[side].counters = {};
-  refreshEnergy(ctx, side);
+  syncPlayerEnergy(state, side);
   const record = state.players[side];
   const energy = energyEnabled(state) ? ` (能量 ${record.energy}/${record.energy_max})` : '';
   ctx.log('SYSTEM', `第 ${state.turn} 回合 · ${PLAYER_LABEL[side]}行动开始${energy}`, { side, side_index });

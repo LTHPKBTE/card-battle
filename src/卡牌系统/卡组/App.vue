@@ -253,6 +253,7 @@
           <AiContextField v-model:enabled="aiWithHistory" v-model:count="aiHistory" />
           <div v-if="aiError" class="dk-modal-error">{{ aiError }}</div>
           <AiSettingsLink />
+          <AiPromptLink />
           <div class="dk-modal-actions">
             <button class="dk-primary" type="button" :disabled="aiBusy" @click="runAiDeck">
               {{ aiBusy ? '生成中…' : '生成' }}
@@ -272,6 +273,7 @@ import { aiStopAll } from '../AI/客户端';
 import { 生成卡组 } from '../AI/任务';
 import AiContextField from '../AI/components/AiContextField.vue';
 import AiSettingsLink from '../AI/components/AiSettingsLink.vue';
+import AiPromptLink from '../AI/components/AiPromptLink.vue';
 import { createCard, loadCards } from '../卡牌/data';
 import { cardContentKey, indexCardsByContent } from '../卡牌/去重';
 import { cardIssueMap } from '../卡牌/校验';
@@ -821,6 +823,8 @@ onBeforeUnmount(() => {
 </script>
 
 <style lang="scss" scoped>
+@use '../共用/稀有度' as *;
+
 .dk-overlay {
   --dk-panel: rgb(var(--panel-tint, 22 24 33) / var(--panel-alpha, 0.92));
   --dk-border: rgb(255 255 255 / 0.1);
@@ -1411,8 +1415,7 @@ onBeforeUnmount(() => {
 }
 
 .rarity-UR {
-  background: linear-gradient(45deg, #89f7fe, #66a6ff);
-  color: #002d62;
+  @include rare-shimmer;
 }
 
 .dk-empty {

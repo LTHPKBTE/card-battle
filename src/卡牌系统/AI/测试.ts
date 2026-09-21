@@ -16,6 +16,19 @@ import {
 } from './解析.ts';
 import { 卡牌写作规范, 输出约定, 机读规范, 用户优先规范 } from './规范.ts';
 import {
+  PROMPT_ENTRIES,
+  PROMPT_KEYS,
+  PROMPT_TEXT_LIMIT,
+  applyPromptOverrides,
+  isPromptCustomized,
+  promptDefault,
+  promptOverrides,
+  promptText,
+  promptTextFilled,
+  savePromptOverrides,
+  渲染模板,
+} from './提示词.ts';
+import {
   AiSettingsSchema,
   aiSettingsIssue,
   defaultAiSettings,
@@ -532,6 +545,75 @@ section('6 写卡 AI 接口设置');
   check('缺字段时补默认值', AiSettingsSchema.parse({}).模式 === '当前');
   check('node 下读取设置返回默认', loadAiSettings().模式 === '当前', loadAiSettings());
   check('node 下预设列表为空', listProxyPresets().length === 0);
+}
+
+// ---------------------------------------------------------------------------
+section('6.5 提示词查看与自定义');
+{
+  check('条目键与 PROMPT_KEYS 一一对应', PROMPT_ENTRIES.map(item => item.key).join(',') === PROMPT_KEYS.join(','));
+  check('每条都有标题', PROMPT_ENTRIES.every(item => item.标题.trim().length > 0));
+  check('每条都有说明', PROMPT_ENTRIES.every(item => item.说明.trim().length > 0));
+  check('每条默认文本都不空', PROMPT_ENTRIES.every(item => item.默认.trim().length > 0));
+  check(
+    '关键条目已标出机读规范与三个任务说明',
+    PROMPT_ENTRIES.filter(item => item.关键).map(item => item.key).join(',') === '机读规范,卡牌任务,卡组任务,机读任务',
+  );
+  check('长度上限是正数', PROMPT_TEXT_LIMIT > 0, PROMPT_TEXT_LIMIT);
+
+  // 默认值 = 规范.ts 里的那四段, 一个字都不能差 (否则用户看到的和实际发的不是一回事)
+  check('用户优先默认 = 用户优先规范', promptDefault('用户优先') === 用户优先规范);
+  check('卡牌规范默认 = 卡牌写作规范', promptDefault('卡牌规范') === 卡牌写作规范);
+  check('机读规范默认 = 机读规范', promptDefault('机读规范') === 机读规范);
+  check('输出约定默认 = 输出约定', promptDefault('输出约定') === 输出约定);
+  check('未自定义时 promptText = 默认', promptText('卡牌任务') === promptDefault('卡牌任务'));
+  check('未自定义时标记为未改过', isPromptCustomized('卡牌任务') === false);
+
+  // 占位符: 卡组任务里那几处 {{...}} 必须能被填上
+  check('渲染模板会替换占位符', 渲染模板('本次{{方式}}共 {{张数}} 张', { 方式: '新增', 张数: 8 }) === '本次新增共 8 张');
+  check('占位符两边空格也认', 渲染模板('{{ 张数 }}', { 张数: 3 }) === '3');
+  check('没给值的占位符清成空', 渲染模板('a{{没有}}b') === 'ab');
+  check('默认卡组任务带占位符', ['阵营', '卡牌阵营', '方式', '张数'].every(name => promptDefault('卡组任务').includes(`{{${name}}}`)));
+  check(
+    'promptTextFilled 会把卡组任务填好',
+    promptTextFilled('卡组任务', { 阵营: '敌方', 卡牌阵营: '敌方', 方式: '', 张数: 6 }).includes('【任务】为一场卡牌战斗设计「敌方」卡组.'),
+  );
+  check(
+    '默认卡组任务含张数说明',
+    promptTextFilled('卡组任务', { 张数: 5 }).includes('总张数控制在 5 张左右'),
+  );
+}
+{
+  // 改过之后: 实际发出的提示词要跟着变 (而不是只存在界面里)
+  applyPromptOverrides({ 用户优先: '【自定义开场白】先看用户要求.' });
+  check('自定义后 promptText 返回自定义文本', promptText('用户优先') === '【自定义开场白】先看用户要求.');
+  check('自定义后标记为已改', isPromptCustomized('用户优先') === true);
+  check('没改的条目不受影响', promptText('机读规范') === 机读规范);
+  check(
+    '生成单卡用上了自定义开场白',
+    卡牌请求({ 阵营: '我方', 需求: '' }).system?.startsWith('【自定义开场白】') === true,
+    卡牌请求({ 阵营: '我方', 需求: '' }).system?.slice(0, 20),
+  );
+
+  applyPromptOverrides({ 卡组任务: '自写任务: {{阵营}} / {{张数}}' });
+  const deck = 卡组请求({ 阵营: '敌方', 张数: 7, 带入上下文: false });
+  check('生成卡组用上了自定义任务块', deck.system?.includes('自写任务: 敌方 / 7') === true, deck.system);
+  check('自定义任务块之外的开场白回到默认', deck.system?.startsWith(用户优先规范) === true);
+  check('动态说明行依然跟上 (不归提示词管)', deck.system?.includes('请从零设计一整套卡组') === true);
+
+  // 规整: 只收已知键 + 非空字符串
+  applyPromptOverrides({ 用户优先: '  ', 不存在的键: 'x', 机读规范: 42, 输出约定: '留白之前的内容' });
+  check('空字符串不算自定义', isPromptCustomized('用户优先') === false);
+  check('未知键被丢弃', Object.keys(promptOverrides()).join(',') === '输出约定', promptOverrides());
+  check('非字符串被丢弃', isPromptCustomized('机读规范') === false);
+
+  const kept = savePromptOverrides({ 卡牌任务: '自定义任务块' });
+  check('node 下保存不报错且内存生效', kept.卡牌任务 === '自定义任务块' && promptText('卡牌任务') === '自定义任务块');
+  check('保存会覆盖旧值', Object.keys(promptOverrides()).join(',') === '卡牌任务', promptOverrides());
+
+  // 收尾: 恢复到全默认, 免得影响后面的用例
+  applyPromptOverrides({});
+  check('恢复默认后不再有自定义', Object.keys(promptOverrides()).length === 0 && isPromptCustomized('卡牌任务') === false);
+  check('恢复默认后提示词回到原样', 卡牌请求({ 阵营: '我方', 需求: '' }).system?.startsWith(用户优先规范) === true);
 }
 
 // ---------------------------------------------------------------------------

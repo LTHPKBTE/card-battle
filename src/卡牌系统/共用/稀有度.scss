@@ -1,0 +1,98 @@
+/**
+ * 稀有度角标的彩色流光 (UR 用).
+ *
+ * 参数沿用根目录 `Rare-Tag-Overlay-Test.html` / `temp.css` 的那一套:
+ * 条纹透明度 0.20、一圈 3.2s。
+ *
+ * 但**角标里不能塞进整个彩虹**: 在 34×22 的小角标里挤一圈彩虹, 会同时冒出好几条色带,
+ * 又花又糊。所以把条纹周期拉长到 «渐变线长度» (= 斜向跨度) 的 10 倍 (见 `$period`),
+ * 于是一个角标只能看到周期的 0.1 = **0.6 条色带**左右 —— 看上去是「一块颜色在流动」,
+ * 而不是「一个小彩虹」。彩虹的用处是流动, 不是一次看全。
+ *
+ * 位置用百分比而不是像素, 就是为了让这个比例与角标尺寸无关:
+ * 百分比是相对 «渐变线长度» 算的, 大角标小角标都是同样的 0.6 条。
+ *
+ * 三个要点, 少一个就不显示或者不动:
+ *
+ * 1. 条纹本身是 `repeating-linear-gradient(135deg in oklch, ...)`, 相邻色相差 60°;
+ * 2. 色相靠 `--rainbow-phase` 整体旋转, 所以必须用 `@property` 把它注册成 `<angle>` ——
+ *    没注册的自定义属性不可插值, `@keyframes` 对它无效, 条纹会定在那里不动;
+ * 3. 条纹画在 `::before` 上并 `z-index: -1`, 父级 `isolation: isolate` 把它关在自己的层里,
+ *    于是它压在文字下面、又能透出角标身后的底色 —— 角标本体的 `background` 必须透明。
+ *
+ * 只提供 oklch 版实现 (需要 Chrome 111+ / Safari 16.4+ / Firefox 128+), 不做降级。
+ */
+
+@use 'sass:math';
+
+@property --rainbow-phase {
+  syntax: '<angle>';
+  inherits: false;
+  initial-value: 0deg;
+}
+
+@keyframes rainbow-phase-shift {
+  from {
+    --rainbow-phase: 0deg;
+  }
+
+  to {
+    --rainbow-phase: -360deg;
+  }
+}
+
+/**
+ * 给一个角标套上彩色流光.
+ *
+ * 调用方负责字号/内边距/圆角这类尺寸, 这里只管"底怎么铺、字怎么放"。
+ *
+ * @param $alpha  条纹透明度, 越小越透 (默认 0.2)
+ * @param $speed  彩虹转一圈的时间 (默认 3.2s)
+ * @param $period 整圈彩虹的宽度, 百分比相对 «渐变线长度» (默认 1000% = 只看得到 0.6 条色带)
+ */
+@mixin rare-shimmer($alpha: 0.2, $speed: 3.2s, $period: 1000%) {
+  /* 一圈彩虹 = 6 条色带 (每条 60° 色相) */
+  $band: math.div($period, 6);
+
+  --rare-alpha: #{$alpha};
+  --rare-speed: #{$speed};
+
+  position: relative;
+  overflow: hidden;
+  isolation: isolate;
+
+  /* 本体透明, 彩色全靠底下那层条纹 */
+  background: transparent;
+  border: 1px solid rgb(255 255 255 / 0.32);
+  color: #fff;
+  text-shadow: 0 1px 4px rgb(0 0 0 / 0.75);
+
+  &::before {
+    --rainbow-phase: 0deg;
+
+    content: '';
+    position: absolute;
+    inset: 0;
+    z-index: -1; /* 隔离上下文里: 位于透明本体之上、文字之下 */
+    pointer-events: none;
+
+    /* 六条色带 = 一圈彩虹, 所以每 1/6 个周期推一次色相 */
+    background-image: repeating-linear-gradient(
+      135deg in oklch,
+      oklch(0.75 0.125 calc(var(--rainbow-phase) + 0deg) / var(--rare-alpha)) 0,
+      oklch(0.75 0.125 calc(var(--rainbow-phase) + 60deg) / var(--rare-alpha)) $band,
+      oklch(0.75 0.125 calc(var(--rainbow-phase) + 120deg) / var(--rare-alpha)) $band * 2,
+      oklch(0.75 0.125 calc(var(--rainbow-phase) + 180deg) / var(--rare-alpha)) $band * 3,
+      oklch(0.75 0.125 calc(var(--rainbow-phase) + 240deg) / var(--rare-alpha)) $band * 4,
+      oklch(0.75 0.125 calc(var(--rainbow-phase) + 300deg) / var(--rare-alpha)) $band * 5,
+      oklch(0.75 0.125 calc(var(--rainbow-phase) + 360deg) / var(--rare-alpha)) $period
+    );
+    animation: rainbow-phase-shift var(--rare-speed) linear infinite;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    &::before {
+      animation: none;
+    }
+  }
+}

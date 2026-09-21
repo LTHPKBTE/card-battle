@@ -150,6 +150,7 @@
         placeholder="告诉 AI 你想怎么写机读, 例如: 只做常驻修正 / 不要用召唤效果"
       ></textarea>
       <AiSettingsLink />
+      <AiPromptLink />
     </div>
   </div>
 
@@ -164,6 +165,7 @@ import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import { aiStopAll } from '../../AI/客户端';
 import { 写机读 } from '../../AI/任务';
 import AiSettingsLink from '../../AI/components/AiSettingsLink.vue';
+import AiPromptLink from '../../AI/components/AiPromptLink.vue';
 import { addCardToDeck, createDeck, hasChat, loadDecks } from '../../卡组/data';
 import type { Deck } from '../../卡组/schema';
 import { loadCard, machineEffectFromYaml, machineEffectToYaml } from '../data';

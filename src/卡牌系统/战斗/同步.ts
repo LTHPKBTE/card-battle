@@ -44,6 +44,7 @@ import {
   playCard,
   resolveAsk,
   startBattle,
+  syncPlayerEnergy,
   type AskableEffect,
   type AskRequest,
   type BattleConfig,
@@ -382,6 +383,26 @@ export async function resetPracticeSession(): Promise<BattleState | null> {
     return null;
   }
   return startPracticeSession(session.setup);
+}
+
+/**
+ * 演习中开关能量系统.
+ *
+ * 能量本来只能开局时定, 开打之后就锁死了 —— 演习是拿来试规则的, 得能中途改.
+ * 做法是换一份配置重新挂上去, 再把两边能量按新曲线重算 (关掉时顺手清 0,
+ * 免得卡面上挂着一个花不掉的数字). 新配置同时写回 `session.setup`,
+ * 所以「重置演习」后依然是这个开关值.
+ */
+export function setPracticeEnergyEnabled(enabled: boolean): BattleState | null {
+  if (!session || session.mode !== 'PRACTICE') {
+    return null;
+  }
+  const setup = BattleSetupSchema.parse({ ...session.setup, 能量开关: enabled });
+  session.setup = setup;
+  attachBattleConfig(session.state, toBattleConfig(setup));
+  syncPlayerEnergy(session.state, HUMAN_SIDE);
+  syncPlayerEnergy(session.state, AI_SIDE);
+  return session.state;
 }
 
 /** 结束当前会话 (正式战斗会清掉变量里的快照; 演习直接丢弃) */

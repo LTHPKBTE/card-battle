@@ -94,6 +94,8 @@ const machineYaml = computed(() => (props.card ? machineEffectToYaml(props.card.
 </script>
 
 <style lang="scss" scoped>
+@use '../../共用/稀有度' as *;
+
 .cv {
   // 卡面视觉变量 (仅作用于本组件子树, 不污染酒馆)
   --text-primary: #f0f0f5;
@@ -104,8 +106,6 @@ const machineYaml = computed(() => (props.card ? machineEffectToYaml(props.card.
   --shield-color: #89b4fa;
   --energy-color: #f9e2af;
   --panel-blur: 3px;
-  --rare-alpha: 0.25;
-  --rare-speed: 3.2s;
 
   position: relative;
   isolation: isolate;
@@ -233,48 +233,9 @@ const machineYaml = computed(() => (props.card ? machineEffectToYaml(props.card.
   color: #442b00;
 }
 
+/* UR 角标: 半透明本体 + 身后一圈转着的彩虹条纹, 见 共用/稀有度.scss */
 .rarity-UR {
-  color: #fff;
-  overflow: hidden;
-  isolation: isolate;
-  background: transparent;
-  border: 1px solid rgb(255 255 255 / 0.35);
-  text-shadow: 0 1px 4px rgb(0 0 0 / 0.75);
-}
-
-.rarity-UR::before {
-  --rainbow-phase: 0deg;
-  content: '';
-  position: absolute;
-  inset: 0;
-  z-index: -1;
-  pointer-events: none;
-  background-image: repeating-linear-gradient(
-    135deg in oklch,
-    oklch(0.75 0.125 calc(var(--rainbow-phase) + 0deg) / var(--rare-alpha)) 0,
-    oklch(0.75 0.125 calc(var(--rainbow-phase) + 60deg) / var(--rare-alpha)) 30px,
-    oklch(0.75 0.125 calc(var(--rainbow-phase) + 120deg) / var(--rare-alpha)) 60px,
-    oklch(0.75 0.125 calc(var(--rainbow-phase) + 180deg) / var(--rare-alpha)) 90px,
-    oklch(0.75 0.125 calc(var(--rainbow-phase) + 240deg) / var(--rare-alpha)) 120px,
-    oklch(0.75 0.125 calc(var(--rainbow-phase) + 300deg) / var(--rare-alpha)) 150px,
-    oklch(0.75 0.125 calc(var(--rainbow-phase) + 360deg) / var(--rare-alpha)) 180px
-  );
-  animation: rainbow-phase-shift var(--rare-speed) linear infinite;
-}
-
-@property --rainbow-phase {
-  syntax: '<angle>';
-  inherits: false;
-  initial-value: 0deg;
-}
-
-@keyframes rainbow-phase-shift {
-  from {
-    --rainbow-phase: 0deg;
-  }
-  to {
-    --rainbow-phase: -360deg;
-  }
+  @include rare-shimmer;
 }
 
 .card.rarity-bg-SR {
@@ -355,11 +316,5 @@ const machineYaml = computed(() => (props.card ? machineEffectToYaml(props.card.
   font-size: 0.85em;
   color: var(--text-secondary);
   opacity: 0.75;
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .rarity-UR::before {
-    animation: none;
-  }
 }
 </style>

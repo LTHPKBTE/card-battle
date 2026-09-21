@@ -8,7 +8,9 @@ import { 机读效果示例 } from '../卡牌/机读效果示例.ts';
 import {
   activate,
   attack,
+  attachBattleConfig,
   autoResolveAsk,
+  battleConfig,
   canAttack,
   canMoveCardTo,
   canPayEnergy,
@@ -27,6 +29,7 @@ import {
   playCard,
   resolveAsk,
   startBattle,
+  syncPlayerEnergy,
   type EnergyConfig,
 } from './battle.ts';
 import { parseMachineEffect } from './schema.ts';
@@ -1451,6 +1454,41 @@ section('30. 能量 (上场资源): 曲线 / 支付 / 付不起就上不了场')
   check('关掉能量后 4 费的卡也不再受限制', canPlayCard(free, anything.id) === true);
   playCard(free, anything.id);
   check('关掉能量后不扣费也不报错', free.players.PLAYER.energy === 0 && anything.zone === 'FIELD');
+}
+{
+  // 打到一半换一份能量配置 (演习模式的「上场消耗能量」开关就是这么干的):
+  // 换完必须把两边重算一遍, 否则卡面还挂着一个用不掉的数字
+  const state = build(['火种', '燎原'], [], { energy: { start: 1, per_turn: 0, cap: 1 } });
+  const big = toHand(state, 'PLAYER', '燎原');
+  check('开局 1 点能量, 4 费的卡上不了场', state.players.PLAYER.energy === 1 && canPlayCard(state, big.id) === false);
+
+  attachBattleConfig(state, { ...battleConfig(state)!, energy: { enabled: false } });
+  syncPlayerEnergy(state, 'PLAYER');
+  syncPlayerEnergy(state, 'ENEMY');
+  check(
+    '中途关掉能量: 两边上限与余额都归零, 4 费的卡立刻能上场',
+    state.players.PLAYER.energy_max === 0 &&
+      state.players.PLAYER.energy === 0 &&
+      state.players.ENEMY.energy_max === 0 &&
+      canPlayCard(state, big.id) === true,
+    { player: state.players.PLAYER.energy, enemy_max: state.players.ENEMY.energy_max },
+  );
+
+  attachBattleConfig(state, { ...battleConfig(state)!, energy: { start: 5, per_turn: 0, cap: 5 } });
+  syncPlayerEnergy(state, 'PLAYER');
+  check(
+    '中途再开回来: 按新曲线补满 (不是停在 0)',
+    state.players.PLAYER.energy_max === 5 && state.players.PLAYER.energy === 5,
+    { energy: state.players.PLAYER.energy, max: state.players.PLAYER.energy_max },
+  );
+
+  attachBattleConfig(state, { ...battleConfig(state)!, energy: { start: 2, per_turn: 0, cap: 2, refill: false } });
+  syncPlayerEnergy(state, 'PLAYER');
+  check(
+    '上限调小 (且不补满) 时余额被压到新上限, 不会超发',
+    state.players.PLAYER.energy_max === 2 && state.players.PLAYER.energy === 2,
+    { energy: state.players.PLAYER.energy, max: state.players.PLAYER.energy_max },
+  );
 }
 
 section('31. 手牌上限与弃牌询问 (超上限 → 引擎提问 → 面板/AI 回答)');

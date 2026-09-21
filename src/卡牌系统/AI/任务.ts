@@ -7,12 +7,14 @@
 // 三个任务都走 `generateRaw` 独立请求: 不注入世界书、不占用聊天楼层.
 // 请求本身由 `卡牌请求` / `卡组请求` 两个纯函数构造 (便于测试, 也方便界面
 // 告诉用户「这次会发送什么、会不会带聊天记录」).
+//
+// 提示词文本 (规范 / 任务说明) 都从 提示词.ts 取, 用户可以查看与自定义.
 
 import { parseMachineEffect } from '../引擎/schema.ts';
 import { RARITIES, type Card, type CardFaction } from '../卡牌/schema.ts';
 import { aiGenerate, aiGenerateJson, type AiRequest } from './客户端.ts';
 import { isPlainObject, normalizeAiCard, normalizeAiDeck, parseAiJson, type AiCardDraft } from './解析.ts';
-import { 卡牌写作规范, 输出约定, 机读规范, 用户优先规范 } from './规范.ts';
+import { promptText, promptTextFilled } from './提示词.ts';
 
 // ---------------------------------------------------------------------------
 // 通用: 卡面摘要
@@ -218,15 +220,9 @@ async function repairMachineEffect(context: string, bad_effect: unknown, error: 
  * @param 说明 作者补充说明 (例如「只做常驻修正」)
  */
 export async function 写机读(card: Card, 说明 = ''): Promise<写机读结果> {
-  const system = [
-    用户优先规范,
-    机读规范,
-    输出约定,
-    '【任务】把下面这张卡的自然语言效果描述翻译成机读效果对象.',
-    '只翻译描述里明确写到的效果, 不要自行加强或补充.',
-    '但「作者补充说明」是用户自己的要求, 与描述冲突时以补充说明为准.',
-    '输出格式: {"machine_effect": {...}, "ignored": ["无法表达的效果"]}',
-  ].join('\n\n');
+  const system = [promptText('用户优先'), promptText('机读规范'), promptText('输出约定'), promptText('机读任务')]
+    .filter(Boolean)
+    .join('\n\n');
 
   const context = [
     '【卡牌】',
@@ -296,17 +292,12 @@ export function 卡牌请求(params: 生成卡牌参数): AiRequest {
   const history = 带入上下文 ? clampHistory(历史条数, 30) : 0;
 
   const system = [
-    用户优先规范,
-    卡牌写作规范,
-    机读规范,
-    输出约定,
-    '【任务】按用户需求设计一张卡牌.',
-    '用户提的要求就是最高优先级 (强度、机制、风格都算), 不要用「平衡」之类的理由打回去, 也不要中途再减一点.',
-    '自然语言描述 (description) 与机读效果 (machine_effect) 必须表达同一件事, 且机读效果能通过语法校验.',
+    promptText('用户优先'),
+    promptText('卡牌规范'),
+    promptText('机读规范'),
+    promptText('输出约定'),
     history > 0 ? '你会看到最近的聊天记录, 可以让这张卡贴合当前剧情.' : '',
-    '输出格式 (键名必须完全一致, 不要换成中文键名, 也不要再套一层 card 外壳):',
-    '{"name":"卡名","series":"","rarity":"N","stars":1,"type":"从者","attribute":"","gender":"","race":"","height":"","atk":"300","shield":"300","hp":"1500","energy":"2","description":"效果描述","machine_effect":{}}',
-    '只输出卡牌 JSON 对象, 不要输出卡组或数组.',
+    promptText('卡牌任务'),
   ]
     .filter(Boolean)
     .join('\n\n');
@@ -403,12 +394,10 @@ export function 卡组请求(params: 生成卡组参数): AiRequest {
   const history = 带入上下文 ? clampHistory(历史条数, 30) : 0;
 
   const system = [
-    用户优先规范,
-    卡牌写作规范,
-    机读规范,
-    输出约定,
-    `【任务】为一场卡牌战斗设计「${阵营}」卡组.`,
-    `【生成的卡牌阵营】${卡牌阵营}${卡牌阵营 === '通用' ? ' (双方都能使用)' : ''}`,
+    promptText('用户优先'),
+    promptText('卡牌规范'),
+    promptText('机读规范'),
+    promptText('输出约定'),
     history > 0 ? '你会看到最近的聊天记录, 请让卡牌贴合当前剧情 (角色、世界观、正在发生的事), 而不是通用杂兵.' : '',
     append
       ? '这套卡组已经有一部分卡了, 请在此基础上补充新卡: 不要重复已有卡牌的定位与效果, 优先补齐它的短板.'
@@ -416,11 +405,12 @@ export function 卡组请求(params: 生成卡组参数): AiRequest {
     参考卡组.length > 0
       ? '同时参考对手卡组的强度与构成, 让战斗有来有回: 对手强则略强或克制, 对手弱则略弱. (这只是默认建议, 用户有要求时以用户为准)'
       : '',
-    `卡牌列表中每一项的「数量」表示携带几份, 本次${append ? '新增' : ''}总张数控制在 ${count} 张左右.`,
-    '上下文里的卡牌列表用「×N」表示携带 N 份; 你输出时同样用「数量」字段表示份数, 不要把同一张卡重复写成多条.',
-    '输出格式 (键名必须完全一致, 不要用 cards / quantity 之类的英文键):',
-    '{"名称":"卡组名","备注":"一句话设计思路","卡牌":[{"name":"卡名","series":"","rarity":"N","stars":1,"type":"从者","attribute":"","gender":"","race":"","height":"","atk":"300","shield":"300","hp":"1500","energy":"2","description":"效果描述","machine_effect":{},"数量":1}]}',
-    '只输出卡组 JSON 对象.',
+    promptTextFilled('卡组任务', {
+      阵营,
+      卡牌阵营: `${卡牌阵营}${卡牌阵营 === '通用' ? ' (双方都能使用)' : ''}`,
+      方式: append ? '新增' : '',
+      张数: count,
+    }),
   ]
     .filter(Boolean)
     .join('\n\n');

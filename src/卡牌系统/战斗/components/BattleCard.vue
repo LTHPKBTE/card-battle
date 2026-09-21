@@ -142,9 +142,10 @@ function hpPercent(): string {
 }
 </script>
 
-<style scoped>
+<style lang="scss" scoped>
+@use '../../共用/稀有度' as *;
+
 .bc {
-  --rare-alpha: 0.16;
   position: relative;
   display: flex;
   flex-direction: column;
@@ -259,8 +260,7 @@ function hpPercent(): string {
 }
 
 .bc-rarity.rarity-UR {
-  background: linear-gradient(45deg, #8be9fd, #bd93f9, #ff79c6);
-  color: #16161e;
+  @include rare-shimmer;
 }
 
 .bc-name {
