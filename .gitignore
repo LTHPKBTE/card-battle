@@ -20,5 +20,6 @@ components.d.ts
 # dump_schema.ts 由 src/**/schema.ts 生成的 JSON Schema
 src/**/schema.json
 
-# 本地 AI 助手的踩坑笔记, 不对外发布 (对外文档见 开发说明.md / README.md)
+# 本地开发笔记 / AI 助手约定, 不对外发布 (对外文档见 开发说明.md / README.md)
 AGENTS.md
+.agents/
