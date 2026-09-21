@@ -16,7 +16,7 @@ import { ChatVariableSchema } from './战斗/schema';
 import { installBattleBridge } from './战斗/同步';
 import DebugApp from './调试/App.vue';
 import { clearCardSystemData, confirmClearCardData } from './重置';
-import { createScriptIdDiv, reloadOnChatChange, teleportStyle } from '@util/script';
+import { createScriptIdDiv, reloadOnChatChange, teleportStyle } from './共用/平台';
 
 /** 注册变量结构时使用的类型 */
 type VariableSchemaType = Parameters<typeof registerVariableSchema>[1]['type'];

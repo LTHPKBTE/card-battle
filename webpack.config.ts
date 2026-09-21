@@ -4,8 +4,9 @@
 // - 结构、loader 规则、externals、unplugin 配置都照搬模板, 只有三处不同:
 //   1. 入口只 glob `src/**/index.{ts,tsx,js,jsx}` (不扫描模板的 `示例`/`初始模板`)
 //   2. 去掉了模板的「酒馆实时同步」(socket.io 推送) 与 tavern_sync 打包, 本项目只用 build
-//   3. `@types` / `util` 不在本项目里, 而是通过 tsconfig 的 paths 与 include 指向
-//      `../tavern_helper_template/`, 详见 AGENTS.md
+//   3. 本项目的源码不依赖模板的任何实现代码, 只有 `@types` 是编译期需要而经 tsconfig 指向
+//      `../tavern_helper_template/@types` 的 (模板是 AFPL 许可, 不能把它的代码打进产物,
+//      详见 AGENTS.md 的「许可与依赖边界」)
 //
 // 用法: `corepack pnpm build:dev` (开发) / `corepack pnpm build` (生产)
 //   → `dist/卡牌系统/index.js`
@@ -468,7 +469,6 @@ function parse_configuration(entry: Entry): (_env: any, argv: any) => webpack.Co
         request.startsWith('!') ||
         request.startsWith('http') ||
         request.startsWith('@/') ||
-        request.startsWith('@util/') ||
         path.isAbsolute(request) ||
         fs.existsSync(path.join(context, request)) ||
         fs.existsSync(request)

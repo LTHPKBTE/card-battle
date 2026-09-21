@@ -1,7 +1,7 @@
 // 卡组数据访问层: 以 "聊天变量 (chat)" 为存储, 命名空间 `卡组`
 // - 卡组只存卡牌 id, 需要完整信息时从卡牌库 (角色卡变量) 读取
 // - 出战时把完整卡牌快照写入聊天变量 `战斗.出战卡组`
-import { uuidv4 } from '@util/common';
+import { uuidv4 } from '../共用/平台';
 import { createCard, loadCard, loadCards } from '../卡牌/data';
 import { cardContentKey, indexCardsByContent } from '../卡牌/去重';
 import type { Card, CardInput } from '../卡牌/schema';

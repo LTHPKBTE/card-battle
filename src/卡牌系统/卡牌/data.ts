@@ -1,5 +1,5 @@
 // 卡牌库数据访问层: 以 "角色卡变量 (character)" 为存储, 命名空间 `卡牌库`
-import { literalYamlify, parseString, uuidv4 } from '@util/common';
+import { literalYamlify, parseString, uuidv4 } from '../共用/平台';
 import {
   CARD_EXPORT_FORMAT,
   CARD_LIBRARY_KEY,
