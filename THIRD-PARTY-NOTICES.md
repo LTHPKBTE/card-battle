@@ -7,22 +7,40 @@
 
 ## 内联进构建产物的组件
 
+下面这份清单是从产物里逐个模块核出来的 (`dist/卡牌系统/index.js` 中以 `./node_modules/...`
+为模块名的模块), 三者均为 MIT。用于解析/转换源码的 loader 本身 (`sass-loader`、`postcss-loader`、
+`ts-loader`、`eslint-webpack-plugin` 等) 只在构建时运行, 其代码不进产物。
+
 ### vue-style-loader
 
 - 用途: 把 `.vue` 单文件组件里的样式注入页面
 - 许可证: MIT
 - 版权: Copyright (c) 2016-present Evan You
-- 内联文件: `lib/addStylesClient.js`、`lib/listToStyles.js`
+- 内联文件: `lib/addStylesClient.js`、`lib/listToStyles.js`, 以及 `index.js` 生成的注入代码
 - 主页: <https://github.com/vuejs/vue-style-loader>
 
-### style-loader
+### css-loader
 
-- 用途: 把 `import './x.css'` 的样式注入页面
+- 用途: 它被用作 loader 去处理 CSS, 而 `dist/runtime/api.js` / `dist/runtime/sourceMaps.js`
+  这两个小运行时则被内联进产物, 供上面的样式注入代码调用
 - 许可证: MIT
 - 版权: Copyright JS Foundation and other contributors
-- 主页: <https://github.com/webpack-contrib/style-loader>
+- 内联文件: `dist/runtime/api.js`、`dist/runtime/sourceMaps.js`
+- 主页: <https://github.com/webpack-contrib/css-loader>
 
-两者的 MIT 许可证全文:
+### vue-loader
+
+- 用途: 编译 `.vue` 单文件组件; 其中 `dist/exportHelper.js` 会进入产物
+- 许可证: MIT
+- 版权: Copyright (c) 2014-present Evan You
+- 内联文件: `dist/exportHelper.js`
+- 主页: <https://github.com/vuejs/vue-loader>
+
+> 注意: `style-loader` 虽然在 `devDependencies` 里, 但它**没有**进入产物 —— 产物里出现的
+> "style-loader: Adds some css to the DOM by adding a `<style>` tag" 是 `vue-style-loader`
+> 生成的代码里保留的注释文字。
+
+三者的 MIT 许可证全文:
 
 ```
 Permission is hereby granted, free of charge, to any person obtaining a copy
