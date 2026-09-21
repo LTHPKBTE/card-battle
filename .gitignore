@@ -1,0 +1,21 @@
+node_modules
+
+.DS_Store
+Thumbs.db
+
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# 构建产物 (酒馆助手脚本 JSON 与 index.js 都在这里, 由 pnpm build 生成)
+dist
+
+# unplugin 自动生成的类型, 每次构建都会重写
+auto-imports.d.ts
+auto-imports.zod.d.ts
+components.d.ts
+
+# dump_schema.ts 由 src/**/schema.ts 生成的 JSON Schema
+src/**/schema.json

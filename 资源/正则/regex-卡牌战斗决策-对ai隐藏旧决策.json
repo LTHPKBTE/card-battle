@@ -1,0 +1,17 @@
+{
+    "id": "7b3c9e14-2f6a-4d58-9c07-1a8e5f2b6d31",
+    "scriptName": "卡牌战斗决策-对ai隐藏旧决策",
+    "findRegex": "/(<battle_action>[\\s\\S]*?<\\/battle_action>)/gm",
+    "replaceString": "",
+    "trimStrings": [],
+    "placement": [
+        2
+    ],
+    "disabled": false,
+    "markdownOnly": false,
+    "promptOnly": true,
+    "runOnEdit": true,
+    "substituteRegex": 0,
+    "minDepth": 2,
+    "maxDepth": null
+}

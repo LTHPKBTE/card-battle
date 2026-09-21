@@ -1,0 +1,53 @@
+{
+  "compilerOptions": {
+    "types": [
+      "jquery",
+      "jqueryui",
+      "lodash",
+      "toastr",
+      "type-fest",
+      "yaml",
+      "zod",
+    ],
+    "target": "ESNext",
+    "module": "ESNext",
+    // 不设 rootDir / outDir: 本项目会经由 include / paths 引用 ../tavern_helper_template 下的
+    // `@types` 与 `util`, 且只由 webpack 的 ts-loader 编译而不做 tsc 输出;
+    // 设了 rootDir 会让仓库外的文件报 TS6059, 只设 outDir 则报 TS5011
+    "paths": {
+      "@util/*": [
+        "../tavern_helper_template/util/*"
+      ],
+      "@/*": [
+        "./src/*"
+      ]
+    },
+    "moduleDetection": "auto",
+    "moduleResolution": "bundler",
+    "allowUmdGlobalAccess": true,
+    "allowSyntheticDefaultImports": true,
+    "allowImportingTsExtensions": true,
+    "rewriteRelativeImportExtensions": true,
+    "strictBindCallApply": true,
+    "allowJs": true,
+    "checkJs": false,
+    "sourceMap": true,
+    "strict": true,
+    "jsx": "react-jsx",
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "noImplicitReturns": true,
+    "noFallthroughCasesInSwitch": true,
+    "esModuleInterop": true,
+    "forceConsistentCasingInFileNames": true
+  },
+  "include": [
+    "../tavern_helper_template/@types",
+    "src",
+    "*.d.ts"
+  ],
+  "exclude": [
+    "**/dist/**",
+    "**/node_modules/**"
+  ]
+}
