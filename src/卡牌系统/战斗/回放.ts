@@ -15,6 +15,7 @@
 //
 // 纯函数, 不依赖酒馆全局, 可直接在 node 中测试.
 
+import { formatSize, jsonBytes } from '../共用/体积.ts';
 import { attachBattleConfig, createBattle, endSide, startBattle, type BattleConfig } from '../引擎/battle.ts';
 import type { BattleState, PlayerId } from '../引擎/types.ts';
 import { executeOps } from './决策.ts';
@@ -158,16 +159,7 @@ export function fingerprintState(state: BattleState): string {
   return hashText(parts.join('#'));
 }
 
-/** 一段数据的 JSON 体积 (字符数; 序列化失败返回 0) */
-export function jsonSize(value: unknown): number {
-  try {
-    return (JSON.stringify(value) ?? '').length;
-  } catch {
-    return 0;
-  }
-}
-
-/** 回放数据的体积明细 */
+/** 回放数据的体积明细 (字节数) */
 export interface ReplaySize {
   /** 步骤数组的体积 */
   步骤: number;
@@ -179,10 +171,10 @@ export interface ReplaySize {
   平均每步: number;
 }
 
-/** 算出回放数据占多少字符 (聊天变量会被整份保存, 这个数字直接关系到变量膨胀) */
+/** 算出回放数据占多少字节 (变量会被整份保存, 这个数字直接关系到变量膨胀) */
 export function replaySize(replay: BattleReplay): ReplaySize {
-  const steps = jsonSize(replay.步骤);
-  const origin = replay.起点 === null || replay.起点 === undefined ? 0 : jsonSize(replay.起点);
+  const steps = jsonBytes(replay.步骤);
+  const origin = replay.起点 === null || replay.起点 === undefined ? 0 : jsonBytes(replay.起点);
   return {
     步骤: steps,
     起点: origin,
@@ -363,5 +355,5 @@ export function describeStep(step: ReplayStep): string {
 export function describeReplaySize(replay: BattleReplay): string {
   const size = replaySize(replay);
   const merged = replay.已丢弃 > 0 ? `, 已合并 ${replay.已丢弃} 步` : '';
-  return `${replay.步骤.length} 步${merged} · 约 ${size.合计} 字符`;
+  return `${replay.步骤.length} 步${merged} · 约 ${formatSize(size.合计)}`;
 }

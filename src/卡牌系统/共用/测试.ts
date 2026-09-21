@@ -2,6 +2,7 @@
 //
 // 运行: node src/卡牌系统/共用/测试.ts
 
+import { formatSize, jsonBytes } from './体积.ts';
 import { normalizeNumberInput, numberInputFallback, resolveNumberInput } from './数字.ts';
 import {
   DEFAULT_PANEL_ALPHA,
@@ -135,6 +136,22 @@ section('6 面板外观 (垫底色 / 不透明度 / 模糊半径)');
   savePanelLook({ 模糊半径: 15 });
   check('订阅者收到一次通知', notified === 1, notified);
   flushPanelLookSave();
+}
+
+// ---------------------------------------------------------------------------
+section('7 数据体积 (UTF-8 字节数 + B / KiB / MiB)');
+{
+  check('空值体积为 0', jsonBytes(null) === 4 && jsonBytes(undefined) === 0);
+  check('中文按 UTF-8 字节算 (1 字 = 3 字节)', jsonBytes('卡') === 5, jsonBytes('卡'));
+  check('数组体积含方括号', jsonBytes([]) === 2 && jsonBytes([1]) === 3);
+  check('对象键值都算进去', jsonBytes({ a: 1 }) === 7, jsonBytes({ a: 1 }));
+  check('不可序列化的值返回 0', jsonBytes(() => 1) === 0);
+
+  check('formatSize: 零', formatSize(0) === '0');
+  check('formatSize: 不足 1 KiB 按字节', formatSize(999) === '999 B');
+  check('formatSize: 1 KiB 起换成 KiB', formatSize(1536) === '1.5 KiB', formatSize(1536));
+  check('formatSize: 1 MiB 起换成 MiB', formatSize(2.5 * 1024 * 1024) === '2.50 MiB', formatSize(2.5 * 1024 * 1024));
+  check('formatSize: 非法值按 0 处理', formatSize(-1) === '0' && formatSize(Number.NaN) === '0');
 }
 
 console.log(`\n通过 ${passed} 项, 失败 ${failed} 项`);

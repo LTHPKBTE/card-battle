@@ -5,7 +5,6 @@
     <div class="dbg-main">
       <header class="dbg-header">
         <span class="dbg-title">调试</span>
-        <span class="dbg-sub">变量占用 · 运行痕迹</span>
         <span class="dbg-spacer" />
         <button class="dbg-btn" type="button" title="重新量一遍 (卡牌库很大时会有一下卡顿)" @click="reload">
           刷新
@@ -20,10 +19,7 @@
       <PanelLookSettings v-if="showLook" @close="showLook = false" />
 
       <div class="dbg-body">
-        <p class="dbg-tip">
-          量的是「变量整份 JSON 的字符数」—— 酒馆把变量序列化后存进聊天文件，所以这个数字就是真实代价。
-          排查异常占用时看下面两张表：先看哪个命名空间大，再钻到具体是哪一条把它撑起来的。
-        </p>
+        <p class="dbg-tip">下面是各处的数据占用。</p>
 
         <div v-if="errorMessage" class="dbg-banner">
           <span>读取变量失败: {{ errorMessage }}</span>
@@ -53,25 +49,30 @@
           <p v-if="scope.错误" class="dbg-warn">读取失败: {{ scope.错误 }}</p>
 
           <template v-if="scope.可读">
-            <p v-if="scope.顶层.length === 0" class="dbg-empty">这个作用域里还没有任何变量。</p>
+            <p v-if="scope.顶层.length === 0" class="dbg-empty">这里还没有数据。</p>
             <template v-else>
-              <div class="dbg-sub-title">顶层命名空间</div>
-              <div v-for="row in scope.顶层" :key="row.路径" class="dbg-row">
+              <div class="dbg-sub-title">主要内容</div>
+              <div v-for="row in topRows(scope)" :key="row.路径" class="dbg-row">
                 <span class="dbg-name" :title="row.路径">{{ row.路径 }}</span>
                 <span class="dbg-bar">
-                  <i :style="{ width: barWidth(row.字符数, scope.合计) }" />
+                  <i :style="{ width: barWidth(row.字节数, scope.合计) }" />
                 </span>
-                <span class="dbg-size">{{ formatSize(row.字符数) }}</span>
+                <span class="dbg-size">{{ formatSize(row.字节数) }}</span>
                 <span class="dbg-meta">{{ row.类型 }}</span>
               </div>
+              <button
+                v-if="scope.顶层.length > DEBUG_TOP_LIMIT"
+                class="dbg-btn small"
+                type="button"
+                @click="toggleTop(scope.key)"
+              >
+                {{ expandedTop.includes(scope.key) ? '收起' : `展开另外 ${scope.顶层.length - DEBUG_TOP_LIMIT} 项` }}
+              </button>
 
-              <div class="dbg-sub-title">
-                占用最大的条目
-                <span class="dbg-hint">最多列出 {{ DEBUG_LEAF_LIMIT }} 条，往下钻到第 {{ DEBUG_LEAF_DEPTH }} 层</span>
-              </div>
+              <div class="dbg-sub-title">占用最大的条目</div>
               <div v-for="row in scope.叶子" :key="row.路径" class="dbg-row leaf">
                 <span class="dbg-name" :title="row.路径">{{ row.路径 || '(空)' }}</span>
-                <span class="dbg-size">{{ formatSize(row.字符数) }}</span>
+                <span class="dbg-size">{{ formatSize(row.字节数) }}</span>
                 <span class="dbg-meta">{{ row.类型 }}</span>
               </div>
             </template>
@@ -89,7 +90,6 @@
           <div class="dbg-sec-head">
             <span class="dbg-sec-title">最近的通知</span>
             <span class="dbg-tag">{{ notifications.length }} 条</span>
-            <span class="dbg-sec-note">回退、提示条都在这里; 关掉提示条也能回看</span>
             <span class="dbg-spacer" />
             <button class="dbg-btn small" type="button" :disabled="notifications.length === 0" @click="clearNotify">
               清空
@@ -113,12 +113,11 @@ import { computed, onUnmounted, ref } from 'vue';
 import PanelLookSettings from '../共用/PanelLookSettings.vue';
 import { clearNotifyHistory, notifyHistory, type NotifyRecord } from '../共用/通知';
 import { flushPanelLookSave, loadPanelLook, onPanelLookChanged, panelLookStyle, type PanelLook } from '../共用/外观';
+import { formatSize } from '../共用/体积';
 import {
-  DEBUG_LEAF_DEPTH,
-  DEBUG_LEAF_LIMIT,
+  DEBUG_TOP_LIMIT,
   collectDebugScopes,
   debugEnvironment,
-  formatSize,
   type EnvRow,
   type ScopeReport,
   type ScopeKey,
@@ -141,6 +140,8 @@ const env = ref<EnvRow[]>([]);
 const notifications = ref<NotifyRecord[]>([]);
 const errorMessage = ref('');
 const expanded = ref<ScopeKey[]>([]);
+/** 顶层命名空间里被点开「展开另外 N 项」的作用域 */
+const expandedTop = ref<ScopeKey[]>([]);
 
 function reload() {
   errorMessage.value = '';
@@ -164,12 +165,23 @@ function toggleJson(key: ScopeKey) {
     : [...expanded.value, key];
 }
 
+/** 顶层命名空间默认只列 DEBUG_TOP_LIMIT 条, 展开后才给全部 (否则变量一多就刷屏) */
+function topRows(scope: ScopeReport) {
+  return expandedTop.value.includes(scope.key) ? scope.顶层 : scope.顶层.slice(0, DEBUG_TOP_LIMIT);
+}
+
+function toggleTop(key: ScopeKey) {
+  expandedTop.value = expandedTop.value.includes(key)
+    ? expandedTop.value.filter(item => item !== key)
+    : [...expandedTop.value, key];
+}
+
 /** 进度条宽度 (占该作用域合计的比例) */
-function barWidth(chars: number, total: number): string {
-  if (total <= 0 || chars <= 0) {
+function barWidth(bytes: number, total: number): string {
+  if (total <= 0 || bytes <= 0) {
     return '0%';
   }
-  return `${Math.max(2, Math.round((chars / total) * 100))}%`;
+  return `${Math.max(2, Math.round((bytes / total) * 100))}%`;
 }
 
 function clearNotify() {
@@ -275,11 +287,6 @@ onUnmounted(() => {
   letter-spacing: 1px;
 }
 
-.dbg-sub {
-  color: var(--dbg-text-secondary);
-  font-size: 0.82em;
-}
-
 .dbg-spacer {
   flex: 1;
 }
@@ -373,11 +380,6 @@ onUnmounted(() => {
   color: var(--dbg-text-secondary);
   font-size: 0.78em;
   letter-spacing: 0.5px;
-}
-
-.dbg-hint {
-  margin-left: 6px;
-  opacity: 0.75;
 }
 
 .dbg-tag {

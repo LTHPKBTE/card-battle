@@ -21,11 +21,10 @@
       <div class="db-sec-head">
         <span class="db-sec-title">面板 → AI 的注入内容</span>
         <span class="db-tag ok">{{ activeCount }} / {{ info.segments.length }} 段生效</span>
-        <span v-if="info.practice" class="db-tag warn">演习模式: 不写变量, 不会有任何注入</span>
+        <span v-if="info.practice" class="db-tag warn">演习模式: 不会影响正式战斗</span>
       </div>
       <p class="db-tip">
-        这就是 AI 实际收到的战斗提示词。不生效的段渲染为空，完全不占上下文；简报里的
-        <code>{ }</code> 是被转义过的花括号，避免酒馆把内容当成宏再展开一次。
+        这就是 AI 实际收到的内容；灰色的段没有生效，不会占上下文。
       </p>
 
       <div
@@ -64,7 +63,7 @@
         </span>
       </div>
       <p class="db-tip">
-        聊天里最近的 assistant 楼层原文，以及脚本从每条里提取到的决策（提取失败时战斗不会推进）。
+        最近的 AI 回复原文，以及从每条里提取到的决策（提取失败时战斗不会推进）。
       </p>
 
       <p v-if="info.replies.length === 0" class="db-empty">还没读到 AI 楼层。</p>
@@ -85,7 +84,7 @@
       <div class="db-sec-head">
         <span class="db-sec-title">AI 决策的结算结果</span>
       </div>
-      <p class="db-tip">最近一次结算写进了聊天变量；下面是本次会话里每次结算的留档（刷新页面后清空）。</p>
+      <p class="db-tip">下面是本次会话里每次结算的留档（刷新页面后清空）。</p>
       <pre class="db-pre">{{ info.result || '(还没有结算过)' }}</pre>
       <div v-if="info.decisions.length > 0" class="db-list">
         <div v-for="(line, index) in info.decisions" :key="index" class="db-list-item">{{ line }}</div>
@@ -103,14 +102,13 @@
       </div>
       <p class="db-tip">
         回合是按「起点 + 每一步操作」重演出来的：面板上的「回溯」与「重新生成后自动回退」都靠它。
-        这份数据也写在下方变量的 <code>回放</code> 字段里（它直接占聊天变量体积）。
       </p>
       <div class="db-kv">
         <span>共 {{ info.replay.总数 }} 步</span>
         <span v-if="info.replay.已丢弃 > 0">已合并 {{ info.replay.已丢弃 }} 步进起点</span>
-        <span>约 {{ info.replay.体积.合计 }} 字符</span>
-        <span>明细: 步骤 {{ info.replay.体积.步骤 }} / 起点 {{ info.replay.体积.起点 }}</span>
-        <span>单步均 {{ info.replay.体积.平均每步 }}</span>
+        <span>约 {{ formatSize(info.replay.体积.合计) }}</span>
+        <span>明细: 步骤 {{ formatSize(info.replay.体积.步骤) }} / 起点 {{ formatSize(info.replay.体积.起点) }}</span>
+        <span>单步均 {{ formatSize(info.replay.体积.平均每步) }}</span>
       </div>
       <p v-if="!info.replay.一致" class="db-empty">
         {{ info.replay.说明 || '重放出来的局面与当前不一致' }}
@@ -134,10 +132,10 @@
 
     <section class="db-sec">
       <div class="db-sec-head">
-        <span class="db-sec-title">聊天变量 {{ BATTLE_AI_PATH }}</span>
+        <span class="db-sec-title">变量快照</span>
         <span v-if="info.store_truncated" class="db-tag warn">已截断展示</span>
       </div>
-      <p class="db-tip">脚本每次同步都会重算这份数据；格式不对时会在控制台警告并按默认值处理。</p>
+      <p class="db-tip">脚本每次同步都会重算这份数据；格式不对时会按默认值处理。</p>
       <pre class="db-pre json">{{ info.store_json }}</pre>
     </section>
   </BattleModal>
@@ -146,8 +144,8 @@
 <script setup lang="ts">
 import { computed } from 'vue';
 
+import { formatSize } from '../../共用/体积.ts';
 import { PROTOCOL_VERSION } from '../协议.ts';
-import { BATTLE_AI_PATH } from '../schema.ts';
 import { DEBUG_REPLY_LIMITS, type BattleDebugInfo } from '../调试.ts';
 import { BATTLE_ENTRY_NAME, type BattleWorldbookStatus } from '../世界书.ts';
 import BattleModal from './BattleModal.vue';

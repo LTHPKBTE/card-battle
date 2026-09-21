@@ -24,7 +24,7 @@ import { BATTLE_AI_PATH, type BattleAIStore, type ReplayStep } from './schema.ts
  */
 export const DEBUG_MESSAGE_SCAN = 40;
 
-/** 变量 JSON 最多展示多少字符 (局面快照会很长, 超出只截断展示) */
+/** 变量 JSON 预览最多展示多少字符 (局面快照会很长, 超出只截断展示) */
 export const DEBUG_JSON_LIMIT = 20000;
 
 /** 可选的「显示多少条 AI 回复」 */
@@ -80,7 +80,7 @@ export interface DebugReplay {
   已丢弃: number;
   /** 是否有起点快照 */
   有起点: boolean;
-  /** 体积明细 (字符数) */
+  /** 体积明细 (字节数) */
   体积: ReplaySize;
   /** 重放出来的局面与当前是否一致 */
   一致: boolean;

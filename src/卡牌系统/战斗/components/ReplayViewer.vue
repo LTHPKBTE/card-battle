@@ -4,7 +4,7 @@
   <BattleModal title="战斗回溯" :subtitle="subtitle" wide @close="emit('close')">
     <p class="rp-tips">
       战斗是按「起点 + 每一步操作」重演出来的, 所以回到任何一步之前得到的局面都和当初完全一致;
-      退回去之后, 后面的分支会直接丢弃, 不会留下痕迹。
+      退回去之后, 后面的记录会直接丢弃, 不会留下痕迹。
     </p>
 
     <div class="rp-bar">
@@ -56,6 +56,7 @@
 <script setup lang="ts">
 import { computed, onUnmounted, ref } from 'vue';
 
+import { formatSize } from '../../共用/体积.ts';
 import type { ReplayReport, ReplaySize } from '../回放.ts';
 import type { ReplayStep } from '../schema.ts';
 import BattleModal from './BattleModal.vue';
@@ -87,10 +88,10 @@ const rows = computed(() =>
 const size = computed<ReplaySize | null>(() => props.report?.体积 ?? null);
 const sizeText = computed(() => {
   if (!size.value) {
-    return props.steps.length === 0 ? '暂无回放数据' : `${props.steps.length} 步`;
+    return props.steps.length === 0 ? '暂无回放数据' : `已记录 ${props.steps.length} 步`;
   }
-  const merged = props.dropped > 0 ? `, 已合并 ${props.dropped} 步进起点` : '';
-  return `${props.steps.length} 步${merged} · 回放数据约 ${size.value.合计} 字符 (步骤 ${size.value.步骤} / 起点 ${size.value.起点}, 单步均 ${size.value.平均每步})`;
+  const merged = props.dropped > 0 ? `（另有 ${props.dropped} 步已折叠）` : '';
+  return `已记录 ${props.steps.length} 步${merged} · 约 ${formatSize(size.value.合计)}`;
 });
 
 const subtitle = computed(() => {

@@ -47,7 +47,7 @@
     </p>
 
     <div ref="listRef" class="lv-list">
-      <p v-if="filtered.length === 0" class="lv-empty">没有符合条件的记录。试试放宆筛选或点「默认」。</p>
+      <p v-if="filtered.length === 0" class="lv-empty">没有符合条件的记录。试试放宽筛选或点「默认」。</p>
       <div
         v-for="item in filtered"
         :key="item.id"

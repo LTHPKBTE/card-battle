@@ -1,19 +1,23 @@
-// 全局调试 · 变量占用数据 (面板「调试」按钮的数据源)
+// 全局调试 · 数据占用 (面板「调试」按钮的数据源)
 //
 // 排查「变量莫名膨胀」时最想知道的只有一件事: 谁占了多少.
 // 这里把三个作用域 (角色卡 / 聊天 / 脚本) 的变量逐层量一遍:
 //
-//   顶层命名空间  —— 卡牌库 / 卡组 / 战斗 / 面板外观 … 各占多少字符;
+//   顶层命名空间  —— 卡牌库 / 卡组 / 战斗 / 面板外观 … 各占多少;
 //   叶子路径      —— 再往下钻, 具体是哪个条目撑大了命名空间 (只列最大的若干条).
 //
-// 量的是 JSON 字符数 (酒馆把变量整份序列化后存在聊天文件里), 所以这个数字就是真实代价.
+// 量的是 JSON 序列化后的 UTF-8 字节数 —— 酒馆把变量整份写进聊天文件, 字节数就是真实代价
+// (中文一个字占 3 字节, 按「字符数」会低估两三倍).
 //
 // 除 collectDebugScopes / debugEnvironment 外都是纯函数, 可以直接在 node 里测.
 
-import { jsonSize } from '../战斗/回放.ts';
+import { jsonBytes } from '../共用/体积.ts';
 
 /** 变量作用域 (不列全局变量: 它跨对话共享, 容易与卡牌数据混淆) */
 export type ScopeKey = 'character' | 'chat' | 'script';
+
+/** 每个作用域的顶层命名空间默认最多列出多少条 (更多的折叠起来) */
+export const DEBUG_TOP_LIMIT = 10;
 
 /** 每个作用域最多列出多少条叶子 */
 export const DEBUG_LEAF_LIMIT = 60;
@@ -31,8 +35,8 @@ export const DEBUG_JSON_LIMIT = 20000;
 export interface SizeRow {
   /** 完整路径 (顶层命名空间下不带前缀, 叶子带 `a.b[0].c`) */
   路径: string;
-  /** JSON 字符数 */
-  字符数: number;
+  /** JSON 字节数 */
+  字节数: number;
   /** 容器里的条目数 (叶子为 0) */
   条目数: number;
   /** 类型说明 */
@@ -54,26 +58,12 @@ export interface ScopeReport {
   顶层: SizeRow[];
   /** 叶子明细 (大 → 小) */
   叶子: SizeRow[];
-  /** 合计字符数 */
+  /** 合计字节数 */
   合计: number;
   /** 变量 JSON 预览 (过长截断) */
   json: string;
   /** JSON 预览是否被截断 */
   json_truncated: boolean;
-}
-
-/** 把字符数说成人话 */
-export function formatSize(chars: number): string {
-  if (chars <= 0) {
-    return '0';
-  }
-  if (chars < 1000) {
-    return `${chars} 字符`;
-  }
-  if (chars < 10000) {
-    return `${(chars / 1000).toFixed(1)} 千字符`;
-  }
-  return `${(chars / 10000).toFixed(2)} 万字符`;
 }
 
 /** 值的类型说明 (带条目数 / 长度) */
@@ -143,11 +133,11 @@ export function flattenLeaves(value: unknown, limit = DEBUG_LEAF_LIMIT): SizeRow
       }
       return;
     }
-    rows.push({ 路径: path, 字符数: jsonSize(node), 条目数: entries, 类型: describeValue(node) });
+    rows.push({ 路径: path, 字节数: jsonBytes(node), 条目数: entries, 类型: describeValue(node) });
   }
 
   walk(value, '', 0);
-  return rows.sort((left, right) => right.字符数 - left.字符数).slice(0, limit);
+  return rows.sort((left, right) => right.字节数 - left.字节数).slice(0, limit);
 }
 
 /** 序列化变量为可读 JSON (过长截断) */
@@ -187,11 +177,11 @@ export function buildScopeReport(params: {
   const 顶层: SizeRow[] = Object.entries(root)
     .map(([key, item]) => ({
       路径: key,
-      字符数: jsonSize(item),
+      字节数: jsonBytes(item),
       条目数: countEntries(item),
       类型: describeValue(item),
     }))
-    .sort((left, right) => right.字符数 - left.字符数);
+    .sort((left, right) => right.字节数 - left.字节数);
 
   return {
     key: params.key,
@@ -201,7 +191,7 @@ export function buildScopeReport(params: {
     错误: params.错误 ?? '',
     顶层,
     叶子: available ? flattenLeaves(root, params.leaf_limit ?? DEBUG_LEAF_LIMIT) : [],
-    合计: available ? jsonSize(root) : 0,
+    合计: available ? jsonBytes(root) : 0,
     json: json.text,
     json_truncated: json.truncated,
   };
@@ -224,22 +214,21 @@ function safeEnv(label: string, read: () => unknown): EnvRow {
   }
 }
 
-/** 当前环境: 角色 / 对话 / 脚本 / 变量来源 */
+/** 当前环境: 角色 / 对话 / 脚本 / 时间 */
 export function debugEnvironment(): EnvRow[] {
   return [
     safeEnv('角色卡', () => getCurrentCharacterId()),
     safeEnv('对话', () => SillyTavern.getCurrentChatId()),
     safeEnv('脚本', () => getScriptId()),
-    safeEnv('变量通道', () => '酒馆助手 getVariables / updateVariablesWith'),
     safeEnv('时间', () => new Date().toLocaleString()),
   ];
 }
 
 /** 三个作用域的标题与说明 (面板与测试共用) */
 export const SCOPE_META: readonly { key: ScopeKey; 标题: string; 说明: string }[] = [
-  { key: 'character', 标题: '角色卡变量', 说明: '随角色卡走: 卡牌库 (所有卡牌定义) 存在这里' },
-  { key: 'chat', 标题: '聊天变量', 说明: '随对话走: 卡组、出战卡组、战斗快照与回放存在这里' },
-  { key: 'script', 标题: '脚本变量', 说明: '跨对话共享: 面板外观等设置存在这里' },
+  { key: 'character', 标题: '角色卡变量', 说明: '卡牌库 (所有卡牌定义) 存在这里' },
+  { key: 'chat', 标题: '聊天变量', 说明: '卡组、出战卡组、战斗快照与回放存在这里' },
+  { key: 'script', 标题: '脚本变量', 说明: '面板外观等设置存在这里' },
 ];
 
 /** 读一个作用域的变量; 读不到时返回错误原因 */

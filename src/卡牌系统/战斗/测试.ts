@@ -43,7 +43,6 @@ import {
   findStepIndex,
   hashText,
   inspectReplay,
-  jsonSize,
   replayBattle,
   replaySize,
   renumberSteps,
@@ -66,8 +65,8 @@ import {
   buildScopeReport,
   describeValue,
   flattenLeaves,
-  formatSize,
 } from '../调试/数据.ts';
+import { jsonBytes } from '../共用/体积.ts';
 import { BATTLE_AI_PATH, BATTLE_STORE_VERSION, BattleAIStoreSchema, BattleSetupSchema } from './schema.ts';
 import type { ReplayStep } from './schema.ts';
 import {
@@ -874,7 +873,7 @@ section('10. 回放: 步骤能重演出同一场战斗');
   const first_size = replaySize({ 步骤: steps, 起点: null, 已丢弃: 0 });
   check('体积合计 = 步骤 + 起点', first_size.合计 === first_size.步骤 && first_size.起点 === 0);
   check('平均每步 = 步骤 / 条数', first_size.平均每步 === Math.round(first_size.步骤 / steps.length));
-  check('jsonSize 对不可序列化的值返回 0', jsonSize(() => 1) === 0);
+  check('jsonBytes 对不可序列化的值返回 0', jsonBytes(() => 1) === 0);
 
   const report = inspectReplay(replayConfig, { 步骤: steps, 起点: null, 已丢弃: 0 }, live);
   check('体检: 步骤数与已丢弃', report.步骤数 === steps.length && report.已丢弃 === 0);
@@ -941,11 +940,6 @@ section('12. 调试: 变量占用量测');
 // ---------------------------------------------------------------------------
 
 {
-  check('formatSize: 零', formatSize(0) === '0');
-  check('formatSize: 小于一千按字符', formatSize(999) === '999 字符');
-  check('formatSize: 一千到一万', formatSize(1500) === '1.5 千字符');
-  check('formatSize: 一万以上按万', formatSize(25000) === '2.50 万字符');
-
   check('describeValue: 对象带条目数', describeValue({ a: 1, b: 2 }) === '对象(2)');
   check('describeValue: 数组带长度', describeValue([1, 2, 3]) === '数组(3)');
   check('describeValue: 字符串带字数', describeValue('卡牌') === '字符串(2 字)');
@@ -956,7 +950,7 @@ section('12. 调试: 变量占用量测');
   check('flattenLeaves 列出叶子路径', leaves.some(item => item.路径 === '大.里'));
   check('flattenLeaves 按大小排序', leaves[0].路径 === '大.里');
   check('flattenLeaves 空容器也算叶子', leaves.some(item => item.路径 === '空'));
-  check('flattenLeaves 叶子带体积', leaves[0].字符数 === jsonSize('y'.repeat(200)));
+  check('flattenLeaves 叶子带体积', leaves[0].字节数 === jsonBytes('y'.repeat(200)));
   check('flattenLeaves 数组下标进路径', flattenLeaves({ 卡: [{ name: 'a' }] }).some(item => item.路径 === '卡[0].name'));
   check('flattenLeaves 遵守条数上限', flattenLeaves({ a: 1, b: 2, c: 3 }, 2).length === 2);
   check(
@@ -973,7 +967,7 @@ section('12. 调试: 变量占用量测');
   check('buildScopeReport 可读', report.可读 && report.错误 === '');
   check('顶层按大小排序', report.顶层[0].路径 === '战斗');
   check('顶层带类型说明', report.顶层[0].类型.startsWith('对象'));
-  check('合计等于整份 JSON 字符数', report.合计 === jsonSize({ 战斗: { AI: { 简报: 'z'.repeat(50) } }, 面板外观: { 垫底色: '#0e1015' } }));
+  check('合计等于整份 JSON 字节数', report.合计 === jsonBytes({ 战斗: { AI: { 简报: 'z'.repeat(50) } }, 面板外观: { 垫底色: '#0e1015' } }));
   check('叶子钻到最里面', report.叶子.some(item => item.路径 === '战斗.AI.简报'));
   check('JSON 预览可用', JSON.parse(report.json).战斗.AI.简报.length === 50);
   check('JSON 没被截断', !report.json_truncated);
