@@ -225,6 +225,12 @@ onUnmounted(() => {
 
   position: fixed;
   inset: 0;
+  /* 酒馆 style.css 里有 `html{transform: translateZ(0px)}` —— 恒等变换同样会让 html 成为
+     fixed 子元素的包含块; 而窄屏时酒馆又把 body 设为 position:fixed, body 脱离文档流后
+     html 高度塌缩为 0, 于是 inset:0 会按「高度为 0 的包含块」解算, 面板塌成一条线。
+     这里用视口单位兜住高度(视口单位不受包含块影响), 任何宽度下都成立。 */
+  height: 100vh;
+  height: 100dvh;
   z-index: 2147483000;
   display: flex;
   padding: 24px;
@@ -535,12 +541,28 @@ onUnmounted(() => {
   word-break: break-word;
 }
 
-.dbg-overlay.is-narrow .dbg-bar {
-  display: none;
-}
+/* ---- 窄屏/手机: 面板铺满视口, 标题行才放得下 ---- */
+.dbg-overlay.is-narrow {
+  padding: 0;
 
-.dbg-overlay.is-narrow .dbg-main {
-  min-height: 320px;
+  .dbg-main {
+    margin: 0;
+    max-width: none;
+    min-height: 0;
+    height: 100%;
+    border: 0;
+    border-radius: 0;
+    box-shadow: none;
+    padding-bottom: env(safe-area-inset-bottom, 0px);
+  }
+
+  .dbg-header {
+    flex-wrap: wrap;
+  }
+
+  .dbg-bar {
+    display: none;
+  }
 }
 
 .dbg-banner {

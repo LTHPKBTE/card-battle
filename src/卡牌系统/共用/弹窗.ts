@@ -65,6 +65,12 @@ const DIALOG_CSS = `
 .csdlg-mask {
   position: fixed;
   inset: 0;
+  /* 酒馆 style.css 里有 html{transform: translateZ(0px)} —— 恒等变换同样会让 html 成为
+     fixed 子元素的包含块; 窄屏时酒馆又把 body 设为 position:fixed, body 脱离文档流后
+     html 高度塌缩为 0, 于是 inset:0 会按「高度为 0 的包含块」解算, 整个弹窗被压成一条。
+     用视口单位兜住高度(视口单位不受包含块影响)。 */
+  height: 100vh;
+  height: 100dvh;
   z-index: 2147483600;
   display: flex;
   align-items: center;
