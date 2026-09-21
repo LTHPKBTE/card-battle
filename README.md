@@ -28,6 +28,7 @@ corepack pnpm build         # 生产构建
 | `src\卡牌系统\` | 脚本源码 (入口 `index.ts`) |
 | `资源\` | 需要手动导入酒馆的世界书、正则与 AI 战斗协议 |
 | `机读效果.md` | 卡牌机读效果 YAML 的书写语法 |
+| [`开发说明.md`](./开发说明.md) | 构建、目录结构、许可证边界等开发向说明 |
 | `.agents\` | 开发笔记 |
 
 ## 依赖说明
@@ -35,15 +36,15 @@ corepack pnpm build         # 生产构建
 本仓库与参考模板仓库 `../tavern_helper_template` **并列存在**, 但**不复制也不打包**它的任何代码,
 只在编译期读它的 `@types` 类型定义 —— **两个目录必须放在同一个父目录下**。
 
-原因与边界详见 [`AGENTS.md`](./AGENTS.md) 的「许可与依赖边界」。
+原因与边界详见 [`开发说明.md`](./开发说明.md) 的「许可与依赖边界」。
 
 ## 许可证
 
 [GNU General Public License v3.0 only](LICENSE) (`GPL-3.0-only`)。
 
-构建产物中内联了少量第三方代码 (vue-style-loader、style-loader, 均为 MIT), 声明见
-[`THIRD-PARTY-NOTICES.md`](./THIRD-PARTY-NOTICES.md)。
+构建产物中内联了少量第三方代码 (vue-style-loader、css-loader、vue-loader 的运行时文件, 均为 MIT),
+声明见 [`THIRD-PARTY-NOTICES.md`](./THIRD-PARTY-NOTICES.md)。
 
 > 本项目的开发参考了 [tavern_helper_template](https://github.com/StageDog/tavern_helper_template)
 > 的构建配置与接口用法。该模板采用 Aladdin Free Public License (AFPL), 它不是开源许可证,
-> 且与本项目的 GPL-3.0 不兼容, 因此本项目**不含模板的任何代码**, 详见 AGENTS.md。
+> 且与本项目的 GPL-3.0 不兼容, 因此本项目**不含模板的任何代码**, 详见 [`开发说明.md`](./开发说明.md)。

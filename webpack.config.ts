@@ -6,7 +6,7 @@
 //   2. 去掉了模板的「酒馆实时同步」(socket.io 推送) 与 tavern_sync 打包, 本项目只用 build
 //   3. 本项目的源码不依赖模板的任何实现代码, 只有 `@types` 是编译期需要而经 tsconfig 指向
 //      `../tavern_helper_template/@types` 的 (模板是 AFPL 许可, 不能把它的代码打进产物,
-//      详见 AGENTS.md 的「许可与依赖边界」)
+//      详见 开发说明.md 的「许可与依赖边界」)
 //
 // 用法: `corepack pnpm build:dev` (开发) / `corepack pnpm build` (生产)
 //   → `dist/卡牌系统/index.js`

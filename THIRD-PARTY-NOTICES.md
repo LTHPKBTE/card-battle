@@ -75,4 +75,4 @@ THE SOFTWARE.
 `tavern_helper_template` 的同类文件写的。该模板采用 Aladdin Free Public License (AFPL),
 它自己声明**不是开源许可证**, 且要求衍生作品整体以 AFPL 授权、禁止涉及付款的分发, 与本仓库的
 GPL-3.0 无法并存。因此本仓库**不打包模板的任何代码**, 只在编译期读取它的 `@types` 类型定义;
-细节与边界见 [`AGENTS.md`](./AGENTS.md) 的「许可与依赖边界」。
+细节与边界见 [`开发说明.md`](./开发说明.md) 的「许可与依赖边界」。

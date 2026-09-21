@@ -5,7 +5,7 @@
 // 「不是开源许可证」, 要求衍生作品**整体**以 AFPL 授权, 且禁止涉及付款的分发. 本仓库以
 // GPL-3.0 发布, 两者无法并存. 因此这里只依据酒馆助手公开接口 (`@types/` 里定义, 例如
 // `getScriptId` / `eventOn` / `tavern_events`) 重新实现, 构建产物中不再包含模板代码.
-// 详见 AGENTS.md 的「许可与依赖边界」.
+// 详见 开发说明.md 的「许可与依赖边界」.
 
 import { parse as parse_json5 } from 'json5';
 import { jsonrepair } from 'jsonrepair';
