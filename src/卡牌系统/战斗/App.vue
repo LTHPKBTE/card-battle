@@ -288,7 +288,6 @@
             <span class="bt-turn-owner" :class="state.active === 'PLAYER' ? 'mine' : 'theirs'">
               {{ state.active === 'PLAYER' ? '我方行动' : '敌方行动' }}
             </span>
-            <span class="bt-turn-step">{{ state.active_index === 0 ? '先手' : '后手' }} · 双方收手后结算</span>
             <span v-if="state.finished" class="bt-result">
               {{ state.winner ? `${state.winner === 'PLAYER' ? '我方' : '敌方'}获胜` : '平局' }}
             </span>
@@ -637,6 +636,7 @@ import LogViewer from './components/LogViewer.vue';
 import PileViewer from './components/PileViewer.vue';
 import ReplayViewer from './components/ReplayViewer.vue';
 import { collectBattleLogs } from './日志.ts';
+import { cardAuraNames } from './详情.ts';
 import { DEBUG_REPLY_LIMIT_DEFAULT, collectBattleDebug, collectDebugReplies } from './调试.ts';
 import type { BattleSetup } from './schema.ts';
 import {
@@ -1972,6 +1972,37 @@ function takeSnapshot(current: BattleState): BattleSnap {
 }
 
 /**
+ * 上场时浮一次字.
+ *
+ * 有「常驻光环」(只带 modifiers、没有 `on` 的效果) 的卡永远不会触发 `runEffect`,
+ * 所以引擎日志里根本不会出现「发动」—— 不在这里补一次, 玩家就完全看不到光环生效了。
+ */
+function setEnterFx(current: BattleState, card: CardInstance) {
+  const auras = cardAuraNames(current, card);
+  if (auras.length > 0) {
+    setCardFx(card.id, 'skill', `【${auras[0]}】`);
+    return;
+  }
+  setCardFx(card.id, 'play');
+}
+
+/**
+ * 技能发动浮字显示什么.
+ *
+ * 优先用日志 detail 里的 `label` (引擎只在一张卡有多个效果时才给出来, 因为单效果卡
+ * 的技能名就等于卡名, 说了也没用); 退回来从日志正文里抠【】—— 那句一定是
+ * 「「卡名」的【技能名】 发动」。
+ */
+function fxSkillName(entry: { message: string; detail?: Record<string, unknown> | null }): string {
+  const label = typeof entry.detail?.label === 'string' ? entry.detail.label : '';
+  if (label) {
+    return label;
+  }
+  const matched = /【(.+?)】/.exec(entry.message);
+  return matched ? matched[1] : '';
+}
+
+/**
  * 对比快照, 把这一轮发生的事翻成动画.
  *
  * 同一张卡一次只留一个动画: 先算「倒下」, 再算「上场 / 抽卡」, 再算「攻击」,
@@ -1988,7 +2019,7 @@ function diffFx(before: BattleSnap, current: BattleState) {
     if (!was) {
       // 中途冒出来的卡 (衍生物 / 召唤物)
       if (card.zone === 'FIELD') {
-        setCardFx(id, 'play');
+        setEnterFx(current, card);
       } else if (card.zone === 'HAND') {
         setCardFx(id, 'draw');
       }
@@ -2002,7 +2033,7 @@ function diffFx(before: BattleSnap, current: BattleState) {
       continue;
     }
     if (was.zone !== 'FIELD' && card.zone === 'FIELD') {
-      setCardFx(id, 'play');
+      setEnterFx(current, card);
     } else if (was.zone !== 'HAND' && card.zone === 'HAND') {
       setCardFx(id, 'draw');
     }
@@ -2041,7 +2072,8 @@ function diffFx(before: BattleSnap, current: BattleState) {
       const card_id = typeof entry.detail?.card === 'string' ? String(entry.detail.card) : '';
       const card = card_id ? current.cards[card_id] : undefined;
       if (card) {
-        setCardFx(card.id, 'skill', entry.message.replace(/ 发动$/, ''));
+        const name = fxSkillName(entry);
+        setCardFx(card.id, 'skill', name ? `【${name}】` : '');
       }
     }
   }
@@ -2796,12 +2828,6 @@ onUnmounted(() => {
 .bt-turn-owner.theirs {
   background: rgb(243 139 168 / 0.18);
   color: #f38ba8;
-}
-
-/* 一个回合里双方各行动一次, 这里标出当前是第几个行动方 */
-.bt-turn-step {
-  opacity: 0.7;
-  font-size: 0.92em;
 }
 
 .bt-result {

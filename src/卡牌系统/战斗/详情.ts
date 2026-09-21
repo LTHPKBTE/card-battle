@@ -7,8 +7,11 @@ import type {
   BattleState,
   CardInstance,
   EffectInstance,
+  PoolEvent,
+  StatKey,
   Zone,
 } from '../引擎/types.ts';
+import { describeLimit, effectLimitUsage } from '../引擎/effects.ts';
 import { explainStat, formatContribution, STAT_LABELS, type StatBreakdown } from '../引擎/溯源.ts';
 
 /** 触发时点显示名 */
@@ -56,6 +59,8 @@ export interface DetailRow {
 /** 一行数值 (当前值 + 基础值 + 变化量) */
 export interface StatRow {
   label: string;
+  /** 对应的数值键 (点击数值行时用它找到要闪一下的那一块) */
+  stat: StatKey;
   /** 当前值 */
   value: number;
   /** 基础值 */
@@ -72,6 +77,8 @@ export interface EffectRow {
   timing: string;
   /** 机读定义 (格式化 JSON) */
   detail: string;
+  /** 使用次数限制的当前用量 (机读区没写 limit 时为空) */
+  limit: string;
 }
 
 /** 一条卡上状态 */
@@ -86,6 +93,8 @@ export interface StatusRow {
 
 /** 一段「加成来源」区块 (按数值分组) */
 export interface TraceRow {
+  /** 数值键 (点击数值行时用它匹配) */
+  stat: StatKey;
   /** 数值显示名 (ATK / 护盾上限 / 生命上限) */
   label: string;
   /** 当前值 / 基础值 */
@@ -93,6 +102,19 @@ export interface TraceRow {
   base: number;
   delta: number;
   /** 每一段来源的说明文本 */
+  lines: string[];
+}
+
+/** 一段「池值变动」区块 (护盾 / 生命) */
+export interface PoolRow {
+  stat: 'hp' | 'shield';
+  label: string;
+  /** 当前值 / 上限 */
+  value: number;
+  max: number;
+  /** 上场之后的净变化 */
+  net: number;
+  /** 变动流水 (新 → 旧) */
   lines: string[];
 }
 
@@ -114,11 +136,23 @@ export function cardInfoRows(card: CardInstance): DetailRow[] {
 export function cardStatRows(card: CardInstance): StatRow[] {
   const { base, current } = card;
   return [
-    { label: '攻击', value: current.atk, base: base.atk, delta: current.atk - base.atk },
-    { label: '护盾', value: current.shield, base: base.shield, delta: current.shield - base.shield },
-    { label: '护盾上限', value: current.shield_max, base: base.shield, delta: current.shield_max - base.shield },
-    { label: '生命', value: current.hp, base: base.hp, delta: current.hp - base.hp },
-    { label: '生命上限', value: current.hp_max, base: base.hp, delta: current.hp_max - base.hp },
+    { label: '攻击', stat: 'atk', value: current.atk, base: base.atk, delta: current.atk - base.atk },
+    { label: '护盾', stat: 'shield', value: current.shield, base: base.shield, delta: current.shield - base.shield },
+    {
+      label: '护盾上限',
+      stat: 'shield_max',
+      value: current.shield_max,
+      base: base.shield,
+      delta: current.shield_max - base.shield,
+    },
+    { label: '生命', stat: 'hp', value: current.hp, base: base.hp, delta: current.hp - base.hp },
+    {
+      label: '生命上限',
+      stat: 'hp_max',
+      value: current.hp_max,
+      base: base.hp,
+      delta: current.hp_max - base.hp,
+    },
   ];
 }
 
@@ -145,11 +179,39 @@ export function cardEffectRows(state: BattleState, card: CardInstance): EffectRo
   const instances = card.effects
     .map(id => state.effects[id])
     .filter((item): item is EffectInstance => Boolean(item));
-  return instances.map((instance, index) => ({
-    label: instance.def.id || `效果 ${index + 1}`,
-    timing: instance.def.on ? (TIMING_LABELS[instance.def.on] ?? instance.def.on) : '常驻',
-    detail: JSON.stringify(instance.def, null, 2),
-  }));
+  return instances.map((instance, index) => {
+    const usage = effectLimitUsage(state, instance);
+    return {
+      label: instance.def.id || `效果 ${index + 1}`,
+      timing: instance.def.on ? (TIMING_LABELS[instance.def.on] ?? instance.def.on) : '常驻',
+      detail: JSON.stringify(instance.def, null, 2),
+      limit: usage ? describeLimit(usage) : '',
+    };
+  });
+}
+
+/**
+ * 这张卡的「常驻光环」效果名 (只有 modifiers、没有 `on` 的那些).
+ *
+ * 常驻效果永远不走 `runEffect`, 所以它们不会自己写「发动」日志 ——
+ * 面板在卡上场时拿这个名单补一次浮字, 否则玩家完全看不到光环生效了.
+ *
+ * 只报**机读区写了 `id`** 的常驻效果: 没写 id 的会被引擎叫成「效果 1」,
+ * 拿它当光环名浮在卡上只会更糊涂 (这种卡就退回普通的「上场」动画).
+ */
+export function cardAuraNames(state: BattleState, card: CardInstance): string[] {
+  if (card.zone !== 'FIELD') {
+    // 光环只在场上生效: 手牌 / 牌库 / 墓地里的卡不该报出光环名
+    return [];
+  }
+  const names: string[] = [];
+  for (const id of card.effects) {
+    const instance = state.effects[id];
+    if (instance && !instance.def.on && instance.def.id === instance.label) {
+      names.push(instance.label);
+    }
+  }
+  return names;
 }
 
 /** 卡上状态 */
@@ -186,11 +248,48 @@ export function cardTraceRows(
       continue;
     }
     rows.push({
+      stat,
       label: STAT_LABELS[stat],
       value: breakdown.value,
       base: breakdown.base,
       delta: breakdown.delta,
       lines,
+    });
+  }
+  return rows;
+}
+
+/** 一条池值变动的说明文本, 如 `T3 +300 ← 「凯尔希」· 超越体` */
+function formatPoolEvent(state: BattleState, event: PoolEvent): string {
+  const name = event.source ? (state.cards[event.source]?.name ?? null) : null;
+  const parts: string[] = [name ? `「${name}」` : event.harm ? '伤害' : '回复'];
+  if (event.label) {
+    parts.push(event.label);
+  }
+  return `T${event.turn} ${event.delta > 0 ? '+' : ''}${event.delta} ← ${parts.join(' · ')}`;
+}
+
+/**
+ * 「池值变动」: 生命 / 护盾的变动流水 (新 → 旧).
+ *
+ * 池值没有「基础值 + 修正」的结构, 所以答不出「谁给的常驻加成」;
+ * 能答的是「这个数是怎么变成现在这样的」—— 一条条加减.
+ * 流水只留最近 `POOL_EVENT_LIMIT` 条, 净变化看 `pool_net` (截断后仍然准).
+ */
+export function cardPoolRows(state: BattleState, card: CardInstance): PoolRow[] {
+  const rows: PoolRow[] = [];
+  for (const stat of ['shield', 'hp'] as const) {
+    const events = (card.pool_events ?? []).filter(event => event.stat === stat);
+    if (events.length === 0) {
+      continue;
+    }
+    rows.push({
+      stat,
+      label: stat === 'shield' ? '护盾' : '生命',
+      value: stat === 'shield' ? card.current.shield : card.current.hp,
+      max: stat === 'shield' ? card.current.shield_max : card.current.hp_max,
+      net: card.pool_net?.[stat] ?? 0,
+      lines: [...events].reverse().map(event => formatPoolEvent(state, event)),
     });
   }
   return rows;

@@ -53,8 +53,10 @@ import {
 import {
   TIMING_LABELS,
   ZONE_LABELS,
+  cardAuraNames,
   cardEffectRows,
   cardInfoRows,
+  cardPoolRows,
   cardPositionRows,
   cardStatRows,
   cardStatusRows,
@@ -677,6 +679,11 @@ section('8. 卡牌详情整理');
   check('数值 5 行 (攻/盾/盾上限/血/上限)', stats.length === 5, stats.map(row => row.label));
   check('变化量等于当前值减基础值', stats.every(row => row.delta === row.value - row.base), stats);
   check('常驻修正被计入当前值', stats[0].value === 500 && stats[0].delta === 200, stats[0]);
+  check(
+    '每一个数值行都带数值键 (面板靠它定位到对应的来源块)',
+    stats.map(row => row.stat).join(',') === 'atk,shield,shield_max,hp,hp_max',
+    stats.map(row => row.stat),
+  );
 
   const position = cardPositionRows(card);
   check('位置行含场上位置', position.some(row => row.label === '场上位置'), position);
@@ -686,6 +693,12 @@ section('8. 卡牌详情整理');
   const effects = cardEffectRows(state, card);
   check('效果行能列出机读定义', effects.length >= 1 && effects[0].detail.includes('{'), effects.length);
   check('无时点的效果显示为常驻', effects[0].timing === '常驻', effects[0].timing);
+  check('没写 limit 的效果不显示用量', effects[0].limit === '', effects[0]);
+  check(
+    '写了 limit 的效果显示用量 (未用时也要写出来)',
+    cardEffectRows(state, handCard(state, 'ENEMY', '研究笔记'))[0].limit === '本回合 0/1 次',
+    cardEffectRows(state, handCard(state, 'ENEMY', '研究笔记'))[0],
+  );
   check('时点表包含主动发动', TIMING_LABELS.MANUAL === '主动发动');
   check('区域表包含牌库与场上', ZONE_LABELS.DECK === '牌库' && ZONE_LABELS.FIELD === '场上');
 
@@ -697,10 +710,65 @@ section('8. 卡牌详情整理');
   // 加成来源: 常驻 +200 要能指回「愿之芽」
   const traces = cardTraceRows(state, card);
   check('溯源列出 ATK 一行', traces.length === 1 && traces[0].label === 'ATK', traces);
+  check('溯源行带数值键 (点数值就能对上)', traces[0].stat === 'atk', traces[0].stat);
   check('溯源带基础值与当前值', traces[0].base === 300 && traces[0].value === 500, traces[0]);
   check('每一段都能看到来源卡名', traces[0].lines[0].includes('「愿之芽」'), traces[0].lines);
   check('源文本形如 +200 ← …', traces[0].lines[0].startsWith('+200 ←'), traces[0].lines[0]);
   check('没有加成的卡不产生溯源行', cardTraceRows(state, handCard(state, 'PLAYER', '封印之匣')).length === 0);
+
+  // 池值变动: 生命 / 护盾没有「基础值 + 修正」, 只能给流水
+  check('没受过伤的卡没有池值流水', cardPoolRows(state, card).length === 0, cardPoolRows(state, card));
+  const victim = fieldCard(state, 'PLAYER', '愿之芽');
+  const striker = fieldCard(state, 'ENEMY', '愿之芽');
+  if (!victim || !striker) {
+    throw new Error('双方场上都该有愿之芽');
+  }
+  attack(state, striker.id, victim.id);
+  const pools = cardPoolRows(state, victim);
+  check('池值变动分成护盾与生命两块', pools.map(row => row.stat).join(',') === 'shield,hp', pools.map(row => row.stat));
+  check('护盾块带当前值 / 上限 / 净变化', pools[0].value === 0 && pools[0].max === 100 && pools[0].net === -100, pools[0]);
+  check('生命块带当前值 / 上限 / 净变化', pools[1].value === 400 && pools[1].max === 800 && pools[1].net === -400, pools[1]);
+  check('护盾流水写明回合 / 变化量 / 来源', pools[0].lines[0] === 'T1 -100 ← 「愿之芽」', pools[0].lines);
+  check('生命流水同样写全', pools[1].lines[0] === 'T1 -400 ← 「愿之芽」', pools[1].lines);
+  check('没被碰过的卡依然没有流水', cardPoolRows(state, fieldCard(state, 'ENEMY', '愿之芽')).length === 0);
+
+  // 常驻光环: 上场时面板靠这个名单补一次浮字
+  check('没写 id 的常驻效果不当光环名 (免得浮出「效果 1」)', cardAuraNames(state, card).length === 0, cardAuraNames(state, card));
+}
+
+{
+  const 光环 = createCardProvider([
+    {
+      id: 'aura-card',
+      name: '光环卡',
+      atk: '100',
+      shield: '0',
+      hp: '500',
+      machine_effect: {
+        effects: [
+          { id: '守护之光', modifiers: [{ stat: 'atk', value: 200 }] },
+          { id: '突击', on: 'MANUAL', operations: [{ type: 'MODIFY', target: 'SELF', stat: 'atk', value: 50 }] },
+        ],
+      },
+    },
+  ]);
+  check('光环测试卡机读区合法', Object.keys(光环.errors).length === 0, 光环.errors);
+  const state = createBattle({
+    card_provider: 光环.provider,
+    player_deck: ['光环卡'],
+    enemy_deck: [],
+    seed: 5,
+    opening_hand: 1,
+  });
+  startBattle(state);
+  const aura_card = cardsInZone(state, 'PLAYER', 'HAND')[0];
+  check('手牌里的卡不报光环 (光环只在场上生效)', cardAuraNames(state, aura_card).length === 0, cardAuraNames(state, aura_card));
+  playCard(state, aura_card.id);
+  check(
+    '上场后报出写了 id 的常驻光环, 带 on 的不算',
+    cardAuraNames(state, aura_card).join(',') === '守护之光',
+    cardAuraNames(state, aura_card),
+  );
 }
 
 // ---------------------------------------------------------------------------

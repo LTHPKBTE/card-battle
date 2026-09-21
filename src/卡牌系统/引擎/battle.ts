@@ -29,10 +29,13 @@
 // 写 `when: CONTROLLER` 也不会被拦下 (双方都会触发).
 
 import {
+  activationBlockReason,
   canActivate,
   collectTriggers,
   createEffect,
   effectLabel,
+  effectName,
+  effectTitle,
   isEffectActive,
   isManualEffect,
   removeEffectsBySource,
@@ -48,6 +51,7 @@ import {
   LOG_ENTRY_LIMIT,
   LOG_KIND_LEVELS,
   PLAYER_IDS,
+  POOL_EVENT_LIMIT,
   isPlayerTarget,
   logLevelRank,
   otherPlayer,
@@ -230,6 +234,8 @@ export function normalizeBattleState(state: BattleState): void {
     if (!Number.isFinite(card.energy)) {
       card.energy = 0;
     }
+    card.pool_events ??= [];
+    card.pool_net ??= { hp: 0, shield: 0 };
   }
 }
 
@@ -349,6 +355,8 @@ function buildInstance(state: BattleState, def: CardDefinition, owner: PlayerId)
     flags: {},
     zone_since_turn: 0,
     attacked_this_turn: false,
+    pool_events: [],
+    pool_net: { hp: 0, shield: 0 },
   };
   state.cards[card.id] = card;
   return card;
@@ -762,6 +770,9 @@ function moveCard(ctx: EngineContext, card: CardInstance, zone: Zone, slot: numb
     // 卡牌离场后, 它自己产生的常驻效果与修正失效 (状态带来的不受影响)
     removeEffectsBySource(ctx, card.id);
     removeModifiersBySource(ctx.state, card.id);
+    // 池值流水与常驻修正同寿: 离场就清掉, 免得旧数据跟到墓地/手牌里
+    card.pool_events.length = 0;
+    card.pool_net = { hp: 0, shield: 0 };
     ctx.recalcAll();
   }
   if (zone === 'FIELD') {
@@ -789,6 +800,45 @@ function checkDefeat(ctx: EngineContext, player: PlayerId): void {
 }
 
 /**
+ * 记一条池值变动流水 (面板上的「池值变动」用它回答「这个数怎么来的」).
+ *
+ * 池值没有「基础值 + 修正」的结构, 所以能追溯的不是来源而是流水:
+ * 谁、在哪个回合、把它加/减了多少. 只留最近 `POOL_EVENT_LIMIT` 条,
+ * 净变化另外累在 `pool_net` 上 —— 流水被截断之后它仍然是准的.
+ *
+ * `source` 由调用方给 (攻击者是攻击的那张卡, 效果是效果的来源卡),
+ * 不能拿 `ctx.source` 代替: 普通攻击根本没有「当前效果」.
+ */
+function recordPool(
+  ctx: EngineContext,
+  card: CardInstance,
+  stat: 'hp' | 'shield',
+  delta: number,
+  harm: boolean,
+  source: string | null,
+): void {
+  if (delta === 0) {
+    return;
+  }
+  card.pool_events ??= [];
+  card.pool_net ??= { hp: 0, shield: 0 };
+  card.pool_events.push({
+    turn: ctx.state.turn,
+    stat,
+    delta,
+    source,
+    // ctx.effect 只在「正在结算某条效果」时有值, 普通攻击就是 null;
+    // 只记机读区写了 id 的技能名 (没写的会被叫成「效果 1」, 贴在流水上只会更花)
+    label: ctx.effect && ctx.effect.def.id === ctx.effect.label ? ctx.effect.label : null,
+    harm,
+  });
+  if (card.pool_events.length > POOL_EVENT_LIMIT) {
+    card.pool_events.splice(0, card.pool_events.length - POOL_EVENT_LIMIT);
+  }
+  card.pool_net[stat] += delta;
+}
+
+/**
  * 护盾增减的统一入口 (正数恢复 / 负数削减).
  *
  * - 结果钳制在 `0 ~ shield_max` 之间
@@ -813,6 +863,7 @@ function applyShieldChange(
     return 0;
   }
   card.current.shield = after;
+  recordPool(ctx, card, 'shield', actual, delta < 0, source);
   ctx.log('COMBAT', `${card.name} 的护盾${actual > 0 ? '+' : '-'}${Math.abs(actual)} (当前 ${after})`, { source });
   // 护盾是池值: 变化后立刻重算 (写「护盾低于上限 xx%」这类条件的修正当场就能跟上)
   ctx.recalcAll();
@@ -882,6 +933,7 @@ function dealDamage(
 
   const hp_lost = Math.min(remaining, card.current.hp);
   card.current.hp -= hp_lost;
+  recordPool(ctx, card, 'hp', -hp_lost, true, source);
   ctx.log('COMBAT', `${card.name} 受到 ${hp_lost} 点伤害 (剩余生命 ${card.current.hp})`, { source });
   // 生命是池值: 变化后立刻重算 (见 dealDamage 顶部的说明)
   ctx.recalcAll();
@@ -913,6 +965,7 @@ function healTarget(ctx: EngineContext, target: Target, value: number, source: s
   }
   const actual = Math.min(value, card.current.hp_max - card.current.hp);
   card.current.hp += actual;
+  recordPool(ctx, card, 'hp', actual, false, source);
   ctx.log('COMBAT', `${card.name} 回复 ${actual} 点生命 (剩余 ${card.current.hp})`, { source });
   ctx.recalcAll();
   return actual;
@@ -1488,6 +1541,17 @@ export function activate(
   }
   return withAnswers(ctx, options?.answers, () => {
     const ok = runEffect(ctx, instance);
+    if (!ok) {
+      // 发动失败不写日志的话, 「次数用完了」与「条件不满足」都看不出区别 —— 玩家只会觉得按钮/技能没反应
+      const reason = activationBlockReason(ctx, instance);
+      if (reason) {
+        ctx.log('EFFECT', `${effectTitle(ctx, instance)} 这次没有发动 (${reason})`, {
+          effect: instance.def.id ?? '',
+          card: instance.source ?? '',
+          label: effectName(ctx, instance) ?? '',
+        });
+      }
+    }
     drain(state);
     return ok;
   });

@@ -618,7 +618,38 @@ export interface CardInstance {
   zone_since_turn: number;
   /** 本回合是否已攻击过 */
   attacked_this_turn: boolean;
+  /**
+   * 池值 (生命 / 护盾) 的变动流水, 旧 → 新, 只留最近 `POOL_EVENT_LIMIT` 条.
+   *
+   * 池值不走分层运算 (只有 `atk` / `shield_max` / `hp_max` 才有「基础值 + 一条条修正」),
+   * 所以追溯不了「来源」—— 能追溯的是「流水」: 谁在哪个回合把它加了多少 / 减了多少.
+   * 离场时清空 (与常驻修正的寿命对齐).
+   */
+  pool_events: PoolEvent[];
+  /** 上场之后的池值净变化 (流水被截断后仍然准确) */
+  pool_net: { hp: number; shield: number };
 }
+
+/**
+ * 池值 (生命 / 护盾) 的一次变动.
+ *
+ * 只用于面板展示, 不进 AI 简报、也不参与任何计算.
+ */
+export interface PoolEvent {
+  turn: number;
+  stat: 'hp' | 'shield';
+  /** 实际变化量 (带符号; 被上限 / 剩余值卡住的差值已经算掉了) */
+  delta: number;
+  /** 来源卡实例 id (引擎直接加减时为 null) */
+  source: string | null;
+  /** 产生这次变动的效果名 (普通攻击等非效果来源为 null) */
+  label: string | null;
+  /** 是不是伤害 (用来把「被打」和「被回复」分开说) */
+  harm: boolean;
+}
+
+/** 一张卡最多留多少条池值变动流水 */
+export const POOL_EVENT_LIMIT = 12;
 
 /** 已物化的效果实例 */
 export interface EffectInstance {

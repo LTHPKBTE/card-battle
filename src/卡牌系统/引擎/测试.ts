@@ -35,7 +35,7 @@ import {
 import { parseMachineEffect } from './schema.ts';
 import { cardsInZone } from './selectors.ts';
 import { evalCondition, evalNumber, evalValue } from './conditions.ts';
-import { runEffect } from './effects.ts';
+import { describeLimit, effectLimitUsage, effectName, effectTitle, runEffect } from './effects.ts';
 import { OP_BUDGET, registerOperation, REPEAT_LIMIT, runOperations } from './operations.ts';
 import { compileValue, formatValue, normalizeCondition, normalizeOperation, parseValueText, ValueError } from './值.ts';
 import { explainStat, statSourceLines } from './溯源.ts';
@@ -44,6 +44,7 @@ import { 测试卡, 非法卡 } from './测试卡.ts';
 import {
   LOG_ENTRY_LIMIT,
   LOG_LEVELS,
+  POOL_EVENT_LIMIT,
   logLevelRank,
   type BattleState,
   type CardInstance,
@@ -1605,6 +1606,224 @@ section('32. 机读区 ask: 发动前先问玩家 (答案清单)');
     Object.values(state.modifiers).map(item => ({ target: item.target, value: item.value, remaining: item.expiry?.remaining })),
   );
   check('答案清单不会被留下 (只作用于那一次操作)', getContext(state).answers === null, getContext(state).answers);
+}
+
+section('33. 池值变动流水 (pool_events / pool_net)');
+{
+  const 池 = createCardProvider([
+    {
+      id: 'pool-core',
+      name: '蓄能核',
+      atk: '0',
+      shield: '300',
+      hp: '1000',
+      machine_effect: {
+        effects: [
+          { id: 'mend', on: 'MANUAL', operations: [{ type: 'RESTORE_SHIELD', target: 'SELF', value: 200 }] },
+          { id: 'patch', on: 'MANUAL', operations: [{ type: 'HEAL', target: 'SELF', value: 150 }] },
+          { id: 'chip', on: 'MANUAL', operations: [{ type: 'DAMAGE', target: 'SELF', value: 120 }] },
+          { id: 'spark', on: 'MANUAL', operations: [{ type: 'DAMAGE', target: 'SELF', value: 10, pierce: true }] },
+        ],
+      },
+    },
+  ]);
+  check('池值测试卡的机读区合法', Object.keys(池.errors).length === 0, 池.errors);
+
+  const state = build(['蓄能核'], [], { provider: 池.provider });
+  const core = toHand(state, 'PLAYER', '蓄能核');
+  playCard(state, core.id);
+  check('刚上场时没有流水', core.pool_events.length === 0 && core.pool_net.hp === 0 && core.pool_net.shield === 0, {
+    events: core.pool_events,
+    net: core.pool_net,
+  });
+
+  activate(state, core.id, 'chip');
+  check(
+    '护盾被打掉 120 → 一条 shield 流水',
+    core.pool_events.length === 1 && core.pool_events[0].stat === 'shield' && core.pool_events[0].delta === -120,
+    core.pool_events,
+  );
+  check(
+    '流水记下了回合 / 来源 / 技能名 / 是不是伤害',
+    core.pool_events[0].turn === 1 &&
+      core.pool_events[0].source === core.id &&
+      core.pool_events[0].label === 'chip' &&
+      core.pool_events[0].harm === true,
+    core.pool_events[0],
+  );
+
+  activate(state, core.id, 'mend');
+  check('回盾记成正向且不是伤害', core.pool_events[1].delta === 120 && core.pool_events[1].harm === false, core.pool_events[1]);
+
+  activate(state, core.id, 'mend');
+  check('加不动的时候不写一条 +0 的流水', core.pool_events.length === 2, core.pool_events.length);
+
+  activate(state, core.id, 'spark');
+  activate(state, core.id, 'spark');
+  activate(state, core.id, 'spark');
+  check(
+    '穿盾伤害记在生命上',
+    core.pool_events.length === 5 && core.pool_events.slice(-3).every(item => item.stat === 'hp' && item.delta === -10),
+    core.pool_events,
+  );
+  check('池值净变化跟着累', core.pool_net.hp === -30, core.pool_net);
+
+  activate(state, core.id, 'patch');
+  check('治疗只记实际加到的量 (970 + 150 只能进 30)', core.pool_events.at(-1)?.delta === 30, core.pool_events.at(-1));
+  check('治疗之后生命净变化回到 0', core.pool_net.hp === 0 && core.current.hp === 1000, {
+    net: core.pool_net,
+    hp: core.current.hp,
+  });
+  check('护盾净变化为 0', core.pool_net.shield === 0, core.pool_net);
+
+  for (let i = 0; i < 20; i += 1) {
+    activate(state, core.id, 'spark');
+  }
+  check('流水只留最近 POOL_EVENT_LIMIT 条', core.pool_events.length === POOL_EVENT_LIMIT, core.pool_events.length);
+  check('留下的是最新的几条', core.pool_events.every(item => item.stat === 'hp' && item.delta === -10), core.pool_events);
+  check('流水被截断后净变化依然准确 (20 × -10)', core.pool_net.hp === -200, core.pool_net);
+  check('生命值也确实是 1000 - 200', core.current.hp === 800, core.current.hp);
+
+  moveCardTo(state, core.id, 'GRAVEYARD');
+  check('离场后流水与净变化都清掉', core.pool_events.length === 0 && core.pool_net.hp === 0 && core.pool_net.shield === 0, {
+    events: core.pool_events,
+    net: core.pool_net,
+  });
+}
+
+section('34. 使用次数 (limit) 的用量与用尽时的说明');
+{
+  const state = build(['研究笔记']);
+  const note = drawUntil(state, 'PLAYER', '研究笔记');
+  playCard(state, note.id);
+  const instance = Object.values(state.effects).find(item => item.def.id === 'study');
+  if (!instance) {
+    throw new Error('研究笔记的效果没有物化');
+  }
+  check('还没用过时写明 0/1', describeLimit(effectLimitUsage(state, instance)!) === '本回合 0/1 次', effectLimitUsage(state, instance));
+
+  const 无限 = createCardProvider([
+    {
+      id: 'free-poke',
+      name: '随手点',
+      atk: '0',
+      shield: '0',
+      hp: '500',
+      machine_effect: {
+        effects: [{ id: 'poke', on: 'MANUAL', operations: [{ type: 'MODIFY', target: 'SELF', stat: 'atk', value: 50 }] }],
+      },
+    },
+  ]);
+  const free_state = build(['随手点'], [], { provider: 无限.provider });
+  const poke = toHand(free_state, 'PLAYER', '随手点');
+  playCard(free_state, poke.id);
+  const poke_effect = Object.values(free_state.effects).find(item => item.def.id === 'poke');
+  if (!poke_effect) {
+    throw new Error('随手点的效果没有物化');
+  }
+  check('没写 limit 的效果没有用量', effectLimitUsage(free_state, poke_effect) === null, effectLimitUsage(free_state, poke_effect));
+
+  check('第一次发动成功', activate(state, note.id, 'study') === true);
+  check('发动后用量 1/1', describeLimit(effectLimitUsage(state, instance)!) === '本回合 1/1 次', effectLimitUsage(state, instance));
+
+  const before = state.log.length;
+  check('第二次发动被次数挡住', activate(state, note.id, 'study') === false);
+  check(
+    '挡下来的时候留下理由 (不再静默失败)',
+    state.log.slice(before).some(entry => entry.message.includes('这次没有发动') && entry.message.includes('本回合 1 次已用完')),
+    state.log.slice(before).map(entry => entry.message),
+  );
+  check(
+    '用尽的技能不再出现在可发动清单里 (面板拿去发按钮)',
+    listActivatable(state, 'PLAYER').every(item => item.def_id !== 'study'),
+    listActivatable(state, 'PLAYER'),
+  );
+
+  endTurn(state);
+  check('回合过去后次数重置', describeLimit(effectLimitUsage(state, instance)!) === '本回合 0/1 次', effectLimitUsage(state, instance));
+  check('新回合又能发动', activate(state, note.id, 'study') === true);
+}
+
+section('35. 日志与浮字里的技能名 (effectName / effectTitle)');
+{
+  const state = build(['研究笔记']);
+  const note = drawUntil(state, 'PLAYER', '研究笔记');
+  playCard(state, note.id);
+  const instance = Object.values(state.effects).find(item => item.def.id === 'study');
+  if (!instance) {
+    throw new Error('研究笔记的效果没有物化');
+  }
+  const ctx = getContext(state);
+  check('写了 id 的效果用 id 当技能名', effectName(ctx, instance) === 'study', effectName(ctx, instance));
+  check('标题形如「卡名」的【技能名】', effectTitle(ctx, instance) === '「研究笔记」的【study】', effectTitle(ctx, instance));
+  const before = state.log.length;
+  activate(state, note.id, 'study');
+  check(
+    '发动日志写技能名而不是只写角色名',
+    state.log.slice(before).some(entry => entry.message === '「研究笔记」的【study】 发动'),
+    state.log.slice(before).map(entry => entry.message),
+  );
+}
+{
+  const 单效 = createCardProvider([
+    {
+      id: 'one-effect',
+      name: '单效',
+      atk: '0',
+      shield: '0',
+      hp: '500',
+      machine_effect: {
+        effects: [{ on: 'MANUAL', operations: [{ type: 'MODIFY', target: 'SELF', stat: 'atk', value: 100 }] }],
+      },
+    },
+    {
+      id: 'two-effect',
+      name: '双效',
+      atk: '100',
+      shield: '0',
+      hp: '1000',
+      machine_effect: {
+        effects: [
+          { id: 'first', on: 'MANUAL', operations: [{ type: 'MODIFY', target: 'SELF', stat: 'atk', value: 100 }] },
+          { on: 'MANUAL', operations: [{ type: 'MODIFY', target: 'SELF', stat: 'atk', value: 200 }] },
+        ],
+      },
+    },
+  ]);
+  check('技能名测试卡的机读区合法', Object.keys(单效.errors).length === 0, 单效.errors);
+
+  const single = build(['单效'], [], { provider: 单效.provider });
+  const one = toHand(single, 'PLAYER', '单效');
+  playCard(single, one.id);
+  const one_effect = single.effects[one.effects[0]];
+  check(
+    '只有一条效果又没写 id → 不念「效果 1」',
+    effectName(getContext(single), one_effect) === null,
+    effectName(getContext(single), one_effect),
+  );
+  check('标题退回卡名本身', effectTitle(getContext(single), one_effect) === '「单效」', effectTitle(getContext(single), one_effect));
+
+  const multi = build(['双效'], [], { provider: 单效.provider });
+  const two = toHand(multi, 'PLAYER', '双效');
+  playCard(multi, two.id);
+  const list = listActivatable(multi, 'PLAYER');
+  check('两条效果都能主动发动', list.length === 2, list);
+  const second = list.find(item => item.def_id !== 'first');
+  if (!second) {
+    throw new Error('第二条效果没在可发动清单里');
+  }
+  check(
+    '没写 id 的效果在一张卡有多条时用序号区分',
+    effectName(getContext(multi), multi.effects[second.effect_id]) === '效果 2',
+    effectName(getContext(multi), multi.effects[second.effect_id]),
+  );
+  const before_multi = multi.log.length;
+  activate(multi, two.id, second.effect_id);
+  check(
+    '日志用「效果 2」区分是哪一条',
+    multi.log.slice(before_multi).some(entry => entry.message === '「双效」的【效果 2】 发动'),
+    multi.log.slice(before_multi).map(entry => entry.message),
+  );
 }
 
 // ---------------------------------------------------------------------------

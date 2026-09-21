@@ -8,6 +8,7 @@ import { resolveTargets } from './selectors.ts';
 import {
   isPlayerTarget,
   otherPlayer,
+  type BattleState,
   type EffectDefinition,
   type EffectInstance,
   type EngineContext,
@@ -182,12 +183,22 @@ export function collectTriggers(ctx: EngineContext, event: GameEvent): EffectIns
       return false;
     }
     if (isAskAllowed(ctx, instance)) {
+      // 次数用尽的理由要留一条日志 —— 否则玩家只看到「技能死活不发动」,
+      // 翻遍面板也找不到原因 (机读区的 limit 是静默生效的)
+      if (!hasLimitLeft(ctx.state, instance)) {
+        ctx.log('EFFECT', `${effectTitle(ctx, instance)} 这次没有发动 (${limitLabel(instance)}已用完)`, {
+          effect: instance.def.id ?? '',
+          card: instance.source ?? '',
+          label: effectName(ctx, instance) ?? '',
+        });
+        return false;
+      }
       return true;
     }
     // 没被批准: 面板/日志要能看到「这张卡本来可以发动」, 否则玩家永远不知道场上有这个技能
     ctx.log(
       'EFFECT',
-      `${effectLabel(ctx, instance)} 的【${instance.label}】这次没有发动 (机读区标了 ask, 需要先确认)`,
+      `${effectTitle(ctx, instance)} 这次没有发动 (机读区标了 ask, 需要先确认)`,
       { effect: instance.def.id ?? '', timing: event.timing },
     );
     return false;
@@ -196,28 +207,71 @@ export function collectTriggers(ctx: EngineContext, event: GameEvent): EffectIns
 }
 
 /** 使用次数限制的计数器键 (按来源卡区分, 同名卡的不同实例各自计数) */
-function limitKey(ctx: EngineContext, instance: EffectInstance): string | null {
+function limitKey(state: BattleState, instance: EffectInstance): string | null {
   const limit = instance.def.limit;
   if (!limit) {
     return null;
   }
-  const scope = limit.per === 'TURN' ? `turn:${ctx.state.turn}` : 'battle';
+  const scope = limit.per === 'TURN' ? `turn:${state.turn}` : 'battle';
   const owner = instance.source ?? instance.status ?? 'global';
   return `limit:${scope}:${owner}:${instance.def.id}`;
 }
 
+/** 一次使用次数限制的当前用量 (面板展示用) */
+export interface EffectLimitUsage {
+  per: 'TURN' | 'BATTLE';
+  /** 限制次数 */
+  times: number;
+  /** 已经用了几次 */
+  used: number;
+  /** 还剩几次 */
+  left: number;
+}
+
+/**
+ * 这条效果的使用次数还剩多少 (机读区没写 `limit` 时返回 null).
+ *
+ * 面板拿它解释「为什么这个技能不发动了」—— `limit` 在引擎里是静默生效的,
+ * 不主动查就看不出来.
+ */
+export function effectLimitUsage(state: BattleState, instance: EffectInstance): EffectLimitUsage | null {
+  const limit = instance.def.limit;
+  const key = limitKey(state, instance);
+  if (!limit || !key) {
+    return null;
+  }
+  const used = state.counters[key] ?? 0;
+  return { per: limit.per, times: limit.times, used, left: Math.max(0, limit.times - used) };
+}
+
+/** 「本回合」/「整场」 */
+export function limitPerLabel(per: 'TURN' | 'BATTLE'): string {
+  return per === 'TURN' ? '本回合' : '整场';
+}
+
+/** 一次限制的完整说法, 如「本回合 1/2 次」 */
+export function describeLimit(usage: EffectLimitUsage): string {
+  return `${limitPerLabel(usage.per)} ${usage.used}/${usage.times} 次`;
+}
+
+/** 「本回合 2 次」—— 用于「已经用完了」这类句子 */
+function limitLabel(instance: EffectInstance): string {
+  const limit = instance.def.limit;
+  return limit ? `${limitPerLabel(limit.per)} ${limit.times} 次` : '';
+}
+
 /** 是否还有剩余使用次数 (不消耗) */
-function hasLimitLeft(ctx: EngineContext, instance: EffectInstance): boolean {
-  const key = limitKey(ctx, instance);
+function hasLimitLeft(state: BattleState, instance: EffectInstance): boolean {
+  const key = limitKey(state, instance);
   if (!key) {
     return true;
   }
-  return (ctx.state.counters[key] ?? 0) < (instance.def.limit?.times ?? 1);
+  return (state.counters[key] ?? 0) < (instance.def.limit?.times ?? 1);
 }
 
 /** 消耗一次使用次数 */
 function consumeLimit(ctx: EngineContext, instance: EffectInstance): void {
-  const key = limitKey(ctx, instance);
+  const key = limitKey(ctx.state, instance);
   if (key) {
     ctx.state.counters[key] = (ctx.state.counters[key] ?? 0) + 1;
   }
@@ -240,6 +294,32 @@ export function effectLabel(ctx: EngineContext, instance: EffectInstance): strin
   return '效果';
 }
 
+/**
+ * 技能名 (机读区里写的 `id`).
+ *
+ * 没写 `id` 时引擎会替它叫「效果 N」—— 那不算名字, 一张卡只有一条效果时就不念出来
+ * (与 `溯源.ts` 的取舍一致); 有多条效果时才用序号区分是哪一条.
+ */
+export function effectName(ctx: EngineContext, instance: EffectInstance): string | null {
+  if (instance.def.id === instance.label) {
+    return instance.label;
+  }
+  const owner = instance.source ? (ctx.state.cards[instance.source] ?? null) : null;
+  return owner && owner.effects.length <= 1 ? null : instance.label;
+}
+
+/**
+ * 日志 / 浮字里的效果标题, 如「「凯尔希」的【医疗指令】」.
+ *
+ * 以前这里直接拿 `effectLabel` 当标题, 于是「发动」前面永远只有角色名 ——
+ * 同一张卡有好几个技能时分不清发动的是哪一个.
+ */
+export function effectTitle(ctx: EngineContext, instance: EffectInstance): string {
+  const owner = `「${effectLabel(ctx, instance)}」`;
+  const name = effectName(ctx, instance);
+  return name ? `${owner}的【${name}】` : owner;
+}
+
 /** 是否为需要玩家主动发动的效果 */
 export function isManualEffect(instance: EffectInstance): boolean {
   return instance.def.on === 'MANUAL';
@@ -255,7 +335,7 @@ export function canActivate(ctx: EngineContext, instance: EffectInstance): boole
   if (ctx.state.finished) {
     return false;
   }
-  if (!isEffectActive(ctx, instance) || !hasLimitLeft(ctx, instance)) {
+  if (!isEffectActive(ctx, instance) || !hasLimitLeft(ctx.state, instance)) {
     return false;
   }
   const def = instance.def;
@@ -272,6 +352,26 @@ export function canActivate(ctx: EngineContext, instance: EffectInstance): boole
   }
   const source_card = instance.source ? (ctx.state.cards[instance.source] ?? null) : null;
   return evalCondition(def.condition, ctx.makeScope(source_card, instance.controller));
+}
+
+/**
+ * 不能发动的原因 (能发动则返回 null).
+ *
+ * `canActivate` 只会回一个 false —— 效果发不动时玩家看不出为什么,
+ * `limit` 用尽尤其阴: 与「次数太多被削」看起来一模一样。这里把 false 拆成一句人话,
+ * 面板与日志拿它解释「这个技能为什么按不动」。
+ */
+export function activationBlockReason(ctx: EngineContext, instance: EffectInstance): string | null {
+  if (ctx.state.finished) {
+    return '战斗已经结束';
+  }
+  if (!hasLimitLeft(ctx.state, instance)) {
+    return `${limitLabel(instance)}已用完`;
+  }
+  if (!isEffectActive(ctx, instance)) {
+    return '效果当前不生效';
+  }
+  return canActivate(ctx, instance) ? null : '发动条件不满足';
 }
 
 /**
@@ -316,10 +416,12 @@ export function runEffect(ctx: EngineContext, instance: EffectInstance): boolean
     }
 
     consumeLimit(ctx, instance);
-    // detail 里带上来源卡与效果 id: 面板靠它定位「是哪张卡的哪个技能发动了」(播放动画 / 打出技能名)
-    ctx.log('EFFECT', `${effectLabel(ctx, instance)} 发动`, {
+    // detail 里带上来源卡与效果名: 面板靠它定位「是哪张卡的哪个技能发动了」
+    // (播放动画 / 打出技能名), 日志里也写技能名而不是只写角色名
+    ctx.log('EFFECT', `${effectTitle(ctx, instance)} 发动`, {
       effect: instance.def.id ?? '',
       card: instance.source ?? '',
+      label: effectName(ctx, instance) ?? '',
     });
     if (def.operations) {
       runOperations(ctx, def.operations);
