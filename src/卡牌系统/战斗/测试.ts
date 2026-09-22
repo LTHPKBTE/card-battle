@@ -9,7 +9,7 @@ import { activate, attack, createBattle, drawCards, endSide, listAskable, listAs
 import { cardsInZone } from '../引擎/selectors.ts';
 import { createCardProvider } from '../引擎/适配.ts';
 import { 测试卡 } from '../引擎/测试卡.ts';
-import type { BattleState, CardInstance, PlayerId } from '../引擎/types.ts';
+import type { BattleState, CardInstance, LogEntry, PlayerId } from '../引擎/types.ts';
 import { buildBrief, renderBrief } from './简报.ts';
 import {
   MAX_DECISION_OPS,
@@ -38,6 +38,7 @@ import { DEBUG_JSON_LIMIT, buildDebugSegments, collectBattleDebug, renderDebugPr
 import {
   REPLAY_KEEP_STEPS,
   REPLAY_STEP_LIMIT,
+  cloneBattleState,
   compactReplay,
   fingerprintState,
   findStepIndex,
@@ -50,6 +51,18 @@ import {
   shiftAnchorsAfterDelete,
   stepMatchesFingerprint,
 } from './回放.ts';
+import { PLAYBACK_FRAME_LIMIT, buildBattlePlayback } from './播放.ts';
+import {
+  DEFAULT_ACTION_INTERVAL,
+  DEFAULT_SETTLE_INTERVAL,
+  MAX_BATTLE_INTERVAL,
+  BattlePaceSchema,
+  defaultBattlePace,
+  describeInterval,
+  loadBattlePace,
+  onBattlePaceChanged,
+  saveBattlePace,
+} from './节奏.ts';
 import {
   TIMING_LABELS,
   ZONE_LABELS,
@@ -63,7 +76,9 @@ import {
   cardTraceRows,
 } from './详情.ts';
 import {
+  DEBUG_LEAF_LIMIT,
   SCOPE_META,
+  buildNameLookup,
   buildScopeReport,
   describeValue,
   flattenLeaves,
@@ -156,7 +171,8 @@ section('0. 简报: 只给 AI 该看的信息');
   check('简报标记手牌可上场', text.includes('[可上场]'), text);
   check('简报标出数值变化量 (300 + 200)', text.includes('500(+200)'), text);
   check('简报不泄露对手手牌 (封印之匣)', !text.includes('封印之匣'), text);
-  check('简报不含牌库内容', !text.includes('牌库'), text);
+  // 「战斗规则」里会合法地提到牌库 (洗牌), 所以只检查没有「牌库列表 / 牌库存牌」
+  check('简报不含牌库列表', !text.includes('你的牌库') && !text.includes('牌库:'), text);
 }
 
 {
@@ -441,6 +457,12 @@ section('5. 变量结构: 缺字段时全部走默认值');
   check('生命默认 8000', setup.我方生命 === 8000 && setup.敌方生命 === 8000);
   check('先手默认 PLAYER', setup.先手 === 'PLAYER');
   check('牌库轮换默认 GRAVEYARD', setup.牌库轮换 === 'GRAVEYARD');
+  check('每回合抽牌默认 1', setup.每回合抽牌 === 1, setup.每回合抽牌);
+  check('洗牌上限默认 0 (不限)', setup.洗牌上限 === 0, setup.洗牌上限);
+  check('洗牌惩罚默认 1', setup.洗牌惩罚 === 1, setup.洗牌惩罚);
+  check('守卫规则默认开', setup.守卫规则 === true, setup.守卫规则);
+  check('溢出传伤默认 0.5', setup.溢出传伤 === 0.5, setup.溢出传伤);
+  check('回合上限默认 30', setup.回合上限 === 30, setup.回合上限);
   check('字符串数字会被转成数字', BattleSetupSchema.parse({ 种子: '42' }).种子 === 42);
 }
 
@@ -1048,6 +1070,50 @@ section('12. 调试: 变量占用量测');
   const huge = buildScopeReport({ key: 'script', 标题: '', 说明: '', value: { 大: 'x'.repeat(DEBUG_JSON_LIMIT + 100) } });
   check('超长变量 JSON 预览被截断', huge.json_truncated && huge.json.length === DEBUG_JSON_LIMIT);
 
+  // ---- uuid 路径的可读名标签 (路径里只有 uuid, 认不出是哪张卡) ----
+  const card_id = '11111111-2222-4333-8444-555555555555';
+  const deck_id = '99999999-8888-4777-8666-555555555555';
+  const names = buildNameLookup({
+    character: { 卡牌库: { 卡牌: { [card_id]: { id: card_id, name: '苍岩幼龙' } } } },
+    chat: { 卡组: { 卡组: { [deck_id]: { id: deck_id, 名称: '测试卡组' } } } },
+  });
+  check('认出卡牌库里的卡名', names.卡牌.get(card_id) === '苍岩幼龙');
+  check('认出聊天变量里的卡组名', names.卡组.get(deck_id) === '测试卡组');
+  check('名字为空就不算认出来', buildNameLookup({ character: { 卡牌库: { 卡牌: { x: { id: 'x', name: '  ' } } } } }).卡牌.size === 0);
+
+  const card_leaves = flattenLeaves(
+    { 卡牌库: { 卡牌: { [card_id]: { id: card_id, name: '苍岩幼龙', description: 'x'.repeat(50) } } } },
+    DEBUG_LEAF_LIMIT,
+    names,
+  );
+  const description = card_leaves.find(item => item.路径 === `卡牌库.卡牌.${card_id}.description`);
+  check('卡牌叶子标上卡名', description?.标签?.文本 === '苍岩幼龙' && description?.标签?.种类 === '卡牌');
+
+  const deck_leaves = flattenLeaves(
+    { 卡组: { 卡组: { [deck_id]: { id: deck_id, 名称: '测试卡组', 卡牌: [card_id] } } } },
+    DEBUG_LEAF_LIMIT,
+    names,
+  );
+  const deck_name = deck_leaves.find(item => item.路径.endsWith('.名称'))?.标签;
+  check('卡组字段标上卡组名', deck_name?.文本 === '测试卡组' && deck_name?.种类 === '卡组');
+  check('卡组里存的卡牌 id 标的是卡名', deck_leaves.find(item => item.路径.endsWith('.卡牌[0]'))?.标签?.文本 === '苍岩幼龙');
+  check('不给索引就一律没有标签', flattenLeaves({ a: { id: card_id } }).every(item => item.标签 === undefined));
+
+  const named = buildScopeReport({
+    key: 'character',
+    标题: '',
+    说明: '',
+    value: { 卡牌库: { 卡牌: { [card_id]: { id: card_id, name: '苍岩幼龙', description: '很长的描述'.repeat(20) } } } },
+    names,
+  });
+  check('面板报告里也带上了名字', named.叶子.some(item => item.标签?.文本 === '苍岩幼龙'));
+
+  const deployed = buildNameLookup({
+    chat: { 战斗: { 出战卡组: { 卡组id: deck_id, 名称: '出战卡组', 卡牌: [{ id: card_id, name: '苍岩幼龙' }] } } },
+  });
+  check('出战卡组快照里的卡组也认得出', deployed.卡组.get(deck_id) === '出战卡组');
+  check('出战卡组快照里的卡牌也认得出', deployed.卡牌.get(card_id) === '苍岩幼龙');
+
   check('三个作用域都有元信息', SCOPE_META.length === 3);
   check('作用域键与酒馆变量类型一致', SCOPE_META.map(item => item.key).join(',') === 'character,chat,script');
 }
@@ -1111,7 +1177,7 @@ section('N. 能量 / 手牌上限 / 询问 (战斗层接得住引擎的新机制
   check('询问里列出了可选的卡', brief.asks[0].options.length === 3, brief.asks[0].options);
   const text = renderBrief(brief);
   check('简报里写清了回答方式', text.includes('"do":"answer"'), text);
-  check('简报里标出要选几张', text.includes('选 1-1 张'), text);
+  check('简报里标出要选几张', text.includes('至少 1 张') && text.includes('最多 3 张'), text);
 
   const victim = cardsInZone(state, 'PLAYER', 'HAND')[1];
   const decision = extractDecision(
@@ -1196,6 +1262,162 @@ section('N. 能量 / 手牌上限 / 询问 (战斗层接得住引擎的新机制
     result,
   });
   check('收手照样完成', result.ok && result.ended && lit.active === 'ENEMY', { ok: result.ok, active: lit.active });
+}
+
+// ---------------------------------------------------------------------------
+section('13. 播放: 一次操作 / 一次结算拆成帧');
+// ---------------------------------------------------------------------------
+
+/** 按同步层 (同步.ts 的 startPlaybackRecorder) 的做法录帧: 每写一条非 DEBUG 日志拷一份状态 */
+function recordFrames(state: BattleState, run: (onFrame: (entry: LogEntry) => void) => void): BattleState[] {
+  const frames: BattleState[] = [];
+  run(entry => {
+    // DEBUG 是事件流水 (每个时点一条), 拷它的快照太浪费, 而且它几乎不改变局面
+    if (entry.level === 'DEBUG') {
+      return;
+    }
+    frames.push(cloneBattleState(state));
+  });
+  return frames;
+}
+
+{
+  const state = setup();
+  const 起点 = cloneBattleState(state);
+  const attacker = fieldCard(state, 'ENEMY', '愿之芽')!;
+  const target = fieldCard(state, 'PLAYER', '愿之芽')!;
+  const frames = recordFrames(state, onFrame =>
+    applyDecision(
+      state,
+      extractDecision(
+        `<battle_action>{"回合":1,"操作":[{"do":"attack","card":"${attacker.id}","target":"${target.id}"}]}</battle_action>`,
+      ),
+      'ENEMY',
+      { onFrame },
+    ),
+  );
+
+  check('攻击 + 自动收手都做完了', state.active === 'PLAYER' && state.turn === 1, { active: state.active });
+  check('录到了帧', frames.length > 0, frames.length);
+
+  const playback = buildBattlePlayback(frames, { 标题: 'AI 行动', 起始回合: 1, 起点 });
+  check('能整理成播放内容', playback !== null);
+  check('标题原样带过来', playback?.标题 === 'AI 行动', playback?.标题);
+  check('整段都算「操作」帧', playback!.帧.every(frame => frame.种类 === '操作'));
+  check('每一帧都有说明', playback!.帧.every(frame => frame.说明.length > 0), playback!.帧.map(frame => frame.说明));
+  check('每一步都各占一帧', playback!.帧.length >= 2, playback!.帧.length);
+  check('最后一帧带上了这次攻击的结果', playback!.帧.at(-1)!.状态.cards[target.id].current.hp === 400, {
+    hp: playback!.帧.at(-1)!.状态.cards[target.id].current.hp,
+  });
+  check('伤害确实出现在中间某一帧', playback!.帧.some(frame => frame.状态.cards[target.id].current.hp === 400));
+  check('第一帧已经和操作前不一样', fingerprintState(playback!.帧[0].状态) !== fingerprintState(起点));
+}
+
+{
+  // 只说了一句话 (局面没变) 的日志不该单独占一帧, 而应该并到下一个真的变了的帧上
+  const state = setup();
+  const 起点 = cloneBattleState(state);
+  const target = fieldCard(state, 'PLAYER', '愿之芽')!;
+  const 快照: BattleState[] = [];
+  state.log.push({ turn: 1, kind: 'SYSTEM', level: 'INFO', message: '先例行的说了一句话' });
+  快照.push(cloneBattleState(state));
+  target.current.hp -= 100;
+  state.log.push({ turn: 1, kind: 'COMBAT', level: 'INFO', message: '挨了一下' });
+  快照.push(cloneBattleState(state));
+
+  const playback = buildBattlePlayback(快照, { 标题: 'AI 行动', 起始回合: 1, 起点 })!;
+  check('只留下真正变化的帧', playback.帧.length === 1, playback.帧.length);
+  check(
+    '攒下的说明并到了那一帧',
+    playback.帧[0].说明.includes('先例行的说了一句话') && playback.帧[0].说明.includes('挨了一下'),
+    playback.帧[0].说明,
+  );
+}
+
+{
+  // 结算: 第一方收手只是换边 (同步层不交付), 第二方收手才推进回合 (交付)
+  const state = setup();
+  endSide(state, 'ENEMY');
+  const 起点 = cloneBattleState(state);
+  const 起始回合 = state.turn;
+  const frames = recordFrames(state, onFrame => endSide(state, 'PLAYER', { onFrame }));
+
+  check('第二方收手后回合推进', state.turn === 起始回合 + 1, state.turn);
+  check('录到了帧', frames.length > 0, frames.length);
+
+  const playback = buildBattlePlayback(frames, { 标题: '回合结算', 起始回合, 起点 });
+  check('结算能整理成播放内容', playback !== null);
+  check('有帧被标成结算', playback!.帧.every(frame => frame.种类 === '结算'), playback!.帧.map(frame => frame.种类));
+  check('结算说明里带上了「结算」那句话', playback!.帧.some(frame => frame.说明.includes('结算')), playback!.帧.map(frame => frame.说明));
+  check('最后一帧已经进入下一回合', playback!.帧.at(-1)!.状态.turn === 起始回合 + 1, playback!.帧.at(-1)!.状态.turn);
+}
+
+{
+  // 局面一点没变 → 不播 (面板照旧直接看最终局面)
+  const state = setup();
+  const 起点 = cloneBattleState(state);
+  check('一条快照都没有就不播', buildBattlePlayback([], { 标题: 'AI 行动', 起始回合: 1, 起点 }) === null);
+  check(
+    '局面没变就不播',
+    buildBattlePlayback([cloneBattleState(state), cloneBattleState(state)], { 标题: 'AI 行动', 起始回合: 1, 起点 }) === null,
+  );
+}
+
+{
+  // 帧太多时尾部折成一帧 (局面仍是最终那份)
+  const state = setup();
+  const 起点 = cloneBattleState(state);
+  const many: BattleState[] = [];
+  for (let index = 1; index <= PLAYBACK_FRAME_LIMIT + 6; index += 1) {
+    // 逼着指纹变化: 随机数计数器本来就是引擎每次随机都会动的东西
+    state.counters.__rng = (state.counters.__rng ?? 0) + 1;
+    state.log.push({ turn: state.turn, kind: 'SYSTEM', level: 'INFO', message: `第 ${index} 件事` });
+    many.push(cloneBattleState(state));
+  }
+
+  const playback = buildBattlePlayback(many, { 标题: '回合结算', 起始回合: 1, 起点 })!;
+  check('帧数被折到上限', playback.帧.length === PLAYBACK_FRAME_LIMIT, playback.帧.length);
+  check('最后一帧是最终局面', fingerprintState(playback.帧.at(-1)!.状态) === fingerprintState(state));
+  check(
+    '折掉的说明并到了最后一帧',
+    playback.帧.at(-1)!.说明.includes('第 24 件事') && playback.帧.at(-1)!.说明.includes('第 30 件事'),
+    playback.帧.at(-1)!.说明,
+  );
+}
+
+// ---------------------------------------------------------------------------
+section('14. 战斗节奏: 播放间隔设置');
+// ---------------------------------------------------------------------------
+
+{
+  check('默认两档都是 2 秒', DEFAULT_ACTION_INTERVAL === 2000 && DEFAULT_SETTLE_INTERVAL === 2000);
+  check('默认节奏就是这两个值', defaultBattlePace().操作间隔 === 2000 && defaultBattlePace().结算间隔 === 2000);
+  check('node 下读取返回默认值', loadBattlePace().操作间隔 === DEFAULT_ACTION_INTERVAL);
+
+  const parsed = BattlePaceSchema.parse({ 操作间隔: '1500', 结算间隔: -20 });
+  check('字符串数字能解析', parsed.操作间隔 === 1500, parsed);
+  check('负数夹到 0 (0 = 不播)', parsed.结算间隔 === 0, parsed);
+  check('超过上限被夹住', BattlePaceSchema.parse({ 操作间隔: 99999 }).操作间隔 === MAX_BATTLE_INTERVAL);
+  check('非法数值回退默认', BattlePaceSchema.parse({ 操作间隔: 'abc' }).操作间隔 === DEFAULT_ACTION_INTERVAL);
+  check('小数四舍五入成整数', BattlePaceSchema.parse({ 操作间隔: 1234.6 }).操作间隔 === 1235);
+  check('缺字段时补默认值', BattlePaceSchema.parse({}).结算间隔 === DEFAULT_SETTLE_INTERVAL);
+
+  const saved = saveBattlePace({ 结算间隔: 3000 });
+  check('保存后立即生效', saved.结算间隔 === 3000 && loadBattlePace().结算间隔 === 3000);
+  check('保存一档不影响另一档', loadBattlePace().操作间隔 === DEFAULT_ACTION_INTERVAL);
+
+  let notified = 0;
+  const off = onBattlePaceChanged(() => {
+    notified += 1;
+  });
+  saveBattlePace({ 操作间隔: 4000 });
+  check('订阅者收到通知', notified === 1, notified);
+  off();
+  saveBattlePace({ 操作间隔: 5000 });
+  check('取消订阅后不再通知', notified === 1, notified);
+
+  check('describeInterval: 0 说成不播', describeInterval(0) === '不播', describeInterval(0));
+  check('describeInterval: 毫秒换算成秒', describeInterval(1500) === '1.5 秒', describeInterval(1500));
 }
 
 // ---------------------------------------------------------------------------

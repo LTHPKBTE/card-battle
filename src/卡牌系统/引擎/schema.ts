@@ -244,6 +244,8 @@ const OperationSpecSchema: z.ZodType<any> = z.lazy(() =>
     zone: ZoneSchema.optional(),
     /** DAMAGE / ATTACK 专用: 无视护盾, 伤害全部打在生命上 */
     pierce: z.boolean().optional(),
+    /** ATTACK 专用: 无视守卫 (对方场上还有卡时也能直接攻击对方本人) */
+    ignore_guard: z.boolean().optional(),
     effects: z.array(EffectDefinitionSchema).optional(),
     modifiers: z.array(ModifierSpecSchema).optional(),
     cancel: z.string().optional(),

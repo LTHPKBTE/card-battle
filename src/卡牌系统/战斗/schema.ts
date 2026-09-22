@@ -126,6 +126,18 @@ export const BattleSetupSchema = z.object({
   先手: z.enum(['PLAYER', 'ENEMY']).prefault('PLAYER'),
   /** 牌库抽空时的处理方式 */
   牌库轮换: z.enum(['GRAVEYARD', 'NONE']).prefault('GRAVEYARD'),
+  /** 每方自己行动开始时抽几张牌 (0 = 只在开局发牌) */
+  每回合抽牌: z.coerce.number().prefault(1),
+  /** 每场最多洗几次牌 (把墓地洗回牌库); 0 = 不限 */
+  洗牌上限: z.coerce.number().prefault(0),
+  /** 每洗一次牌, 该方之后上场卡牌的能量消耗永久 +N (0 = 无代价) */
+  洗牌惩罚: z.coerce.number().prefault(1),
+  /** 守卫规则: 对手场上还有卡时, 普通攻击不能直接打对方本人 */
+  守卫规则: z.boolean().prefault(true),
+  /** 溢出传伤比例 (0~1): 打死一张卡后多余的伤害按此比例传给该卡的控制者 */
+  溢出传伤: z.coerce.number().prefault(0.5),
+  /** 回合上限 (0 = 不限); 打满后按剩余生命比例判定 */
+  回合上限: z.coerce.number().prefault(30),
 });
 export type BattleSetup = z.output<typeof BattleSetupSchema>;
 

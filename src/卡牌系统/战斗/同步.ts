@@ -31,6 +31,7 @@ import {
   attack,
   activate,
   BATTLE_VERSION,
+  battleConfig,
   canAttack,
   canMoveCardTo,
   canPlayCard,
@@ -50,11 +51,13 @@ import {
   type BattleConfig,
 } from '../引擎/battle.ts';
 import { createCardProvider } from '../引擎/适配.ts';
-import type { BattleState, CardDefinition, CardProvider, EffectTiming, PlayerId } from '../引擎/types.ts';
+import type { BattleState, CardDefinition, CardProvider, EffectTiming, LogEntry, PlayerId } from '../引擎/types.ts';
 import { briefText } from './简报.ts';
 import { notify } from '../共用/通知.ts';
 import { applyDecision, extractDecision, type DecisionResult } from './决策.ts';
+import { buildBattlePlayback, type BattlePlayback } from './播放.ts';
 import {
+  cloneBattleState,
   compactReplay,
   inspectReplay,
   hashText,
@@ -209,6 +212,12 @@ function toBattleConfig(setup: BattleSetup): BattleConfig {
     },
     first: setup.先手,
     recycle: setup.牌库轮换,
+    draw_per_turn: setup.每回合抽牌,
+    recycle_limit: setup.洗牌上限,
+    recycle_penalty: setup.洗牌惩罚,
+    guard: setup.守卫规则,
+    splash: setup.溢出传伤,
+    turn_limit: setup.回合上限,
   };
 }
 
@@ -559,6 +568,88 @@ export function battleWorldbookStatus(): Promise<BattleWorldbookStatus> {
   return checkBattleWorldbook();
 }
 
+// ---------------------------------------------------------------------------
+// 播放 (AI 操作回放 / 回合结算动画)
+//
+// 玩法侧的一步操作在引擎里是一串日志 + 一串状态改动. 面板想要「按顺序一格格播」,
+// 就得把中间那些局面留下来 —— 于是让引擎每写一条日志回调一次 (`onFrame`),
+// 我们拷一份状态快照, 再交给 `播放.ts` 整理成帧.
+//
+// 录好就**同步**交给面板 (而不是等它下一轮轮询): 否则「最终局面」会先画出来一下,
+// 再倒回去从头播, 看着像抽了一下.
+//
+// 注意这里只影响画面: 变量早就写好了最终局面, 动画中刷新页面最多是少看一段,
+// 不会出现「只应用了一半」的局面.
+// ---------------------------------------------------------------------------
+
+/** 播放订阅者 (面板挂载时装上; 没人在听就不演了, 反正没人看) */
+const playback_listeners = new Set<(playback: BattlePlayback) => void>();
+
+/** 订阅播放内容, 返回取消订阅的函数 */
+export function onBattlePlayback(listener: (playback: BattlePlayback) => void): () => void {
+  playback_listeners.add(listener);
+  return () => {
+    playback_listeners.delete(listener);
+  };
+}
+
+function deliverPlayback(playback: BattlePlayback): void {
+  for (const listener of playback_listeners) {
+    try {
+      listener(playback);
+    } catch (error) {
+      console.warn('[卡牌战斗] 播放失败', error);
+    }
+  }
+}
+
+/**
+ * 拷一份能直接拿来渲染的状态.
+ *
+ * 必须把战斗配置也接上: 卡片提供者 / 场上上限 / 能量曲线都存在配置里,
+ * 引擎拿一份没接配置的状态去算 (比如「这张卡耗几点能量」) 会得到默认值.
+ */
+function snapshotForPlayback(state: BattleState): BattleState {
+  const copy = cloneBattleState(state);
+  const config = battleConfig(state);
+  if (config) {
+    attachBattleConfig(copy, config);
+  }
+  return copy;
+}
+
+/**
+ * 起一份「播放录制器」.
+ *
+ * @param state 正在打的这一场 (引擎就地改的就是它)
+ * @param 标题 播放标题 (面板进度条上显示)
+ * @param 起始回合 这次操作开始前的回合号
+ */
+function startPlaybackRecorder(state: BattleState, 标题: string, 起始回合: number) {
+  const frames: BattleState[] = [];
+  // 操作前的局面: 拿去判断「第一帧到底有没有变化」, 免得一开始空停一格
+  const 起点 = snapshotForPlayback(state);
+  return {
+    onFrame(entry: LogEntry) {
+      // DEBUG 是事件流水 (每个时点一条), 拷它的快照太浪费, 而且它几乎不改变局面
+      if (entry.level === 'DEBUG') {
+        return;
+      }
+      frames.push(snapshotForPlayback(state));
+    },
+    /** 收尾: 把快照整理成帧, 有东西可播才交给面板 */
+    finish() {
+      if (playback_listeners.size === 0) {
+        return;
+      }
+      const playback = buildBattlePlayback(frames, { 标题, 起始回合, 起点 });
+      if (playback) {
+        deliverPlayback(playback);
+      }
+    },
+  };
+}
+
 /** 是否已经提醒过世界书缺失 (只提醒一次, 不刷屏) */
 let worldbook_warned = false;
 
@@ -748,6 +839,7 @@ export async function operateEndTurn(side: PlayerId, answers?: readonly string[]
   if (!state) {
     return;
   }
+  const turn = state.turn;
   addStep({
     方: side,
     回合: state.turn,
@@ -756,7 +848,12 @@ export async function operateEndTurn(side: PlayerId, answers?: readonly string[]
     操作: [{ do: 'end', ...(answers === undefined ? {} : { answers: [...answers] }) }],
     结束行动: true,
   });
-  endSide(state, side, { answers });
+  const recorder = startPlaybackRecorder(state, '回合结算', turn);
+  endSide(state, side, { answers, onFrame: recorder.onFrame });
+  // 双方都收手了才会进入结算 (回合号推进); 单纯换个边不用演一遍
+  if (state.turn > turn) {
+    recorder.finish();
+  }
   await syncBattle();
 }
 
@@ -893,7 +990,8 @@ export async function handleBattleMessage(message_id: number): Promise<DecisionR
   }
 
   const turn = state.turn;
-  const result = applyDecision(state, decision, AI_SIDE);
+  const recorder = startPlaybackRecorder(state, 'AI 行动', turn);
+  const result = applyDecision(state, decision, AI_SIDE, { onFrame: recorder.onFrame });
   if (result.ok) {
     addStep({
       方: AI_SIDE,
@@ -905,6 +1003,7 @@ export async function handleBattleMessage(message_id: number): Promise<DecisionR
       操作: decision.ops ?? [],
       结束行动: result.ended,
     });
+    recorder.finish();
   }
   if (session) {
     session.decisions.push({ 步: session.steps.length - 1, 文本: `T${turn} ${describeDecisionResult(result)}` });

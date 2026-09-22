@@ -6,7 +6,16 @@
 //   2. 绝不给对手手牌、双方牌库内容、随机种子等隐藏信息 (避免 AI 依据不可见信息作弊);
 //   3. 每张卡都用引擎实例 id (c1 / c2 …) 指代, AI 输出操作时直接引用, 不需要额外映射表.
 
-import { canAttack, canPayEnergy, canPlayCard, cardCost, listActivatable, listAsks } from '../引擎/battle.ts';
+import {
+  battleRules,
+  canAttack,
+  canPayEnergy,
+  canPlayCard,
+  cardCostFor,
+  listActivatable,
+  listAsks,
+  recycleSurcharge,
+} from '../引擎/battle.ts';
 import { cardsInZone } from '../引擎/selectors.ts';
 import { statSourceLines } from '../引擎/溯源.ts';
 import {
@@ -88,6 +97,30 @@ export interface BriefStatus {
   source: string | null;
 }
 
+/** 本场生效的战斗规则 (写进简报, 免得 AI 猜「为什么打不了脸 / 怎么变贵了」) */
+export interface BriefRules {
+  /** 对手场上还有卡时不能直接打脸 */
+  guard: boolean;
+  /** 溢出传伤比例 (0~1) */
+  splash: number;
+  /** 每方行动开始时抽几张牌 */
+  draw_per_turn: number;
+  /** 洗牌次数上限 (0 = 不限) */
+  recycle_limit: number;
+  /** 洗一次牌的永久加价 */
+  recycle_penalty: number;
+  /** AI 已洗牌次数 */
+  ai_recycle: number;
+  /** 对手已洗牌次数 */
+  opponent_recycle: number;
+  /** AI 当前上场加价 (洗牌惩罚累计) */
+  ai_surcharge: number;
+  /** 对手当前上场加价 */
+  opponent_surcharge: number;
+  /** 回合上限 (0 = 不限) */
+  turn_limit: number;
+}
+
 /** 结构化简报 (面板也可以直接用它渲染) */
 export interface BattleBrief {
   turn: number;
@@ -124,6 +157,8 @@ export interface BattleBrief {
   player_ops: string[];
   /** 最近战况 (旧 → 新, 已剔除过于琐碎的 EVENT 记录) */
   recent: string[];
+  /** 本场生效的战斗规则 */
+  rules: BriefRules;
   finished: boolean;
   winner: PlayerId | null;
 }
@@ -146,7 +181,8 @@ function playBlockReason(state: BattleState, card: CardInstance): string {
     return '';
   }
   if (!canPayEnergy(state, card)) {
-    return `能量不足(需 ${cardCost(card)}, 只剩 ${state.players[card.controller].energy})`;
+    // 洗牌加价会算在这里, 所以用 cardCostFor 而不是卡面值
+    return `能量不足(需 ${cardCostFor(state, card)}, 只剩 ${state.players[card.controller].energy})`;
   }
   if (card.zone !== 'HAND') {
     return '不在手牌';
@@ -169,20 +205,37 @@ function toBriefCard(state: BattleState, card: CardInstance): BriefCard {
     attacked: card.attacked_this_turn,
     can_attack: canAttack(state, card.id),
     playable: canPlayCard(state, card.id),
-    energy: cardCost(card),
+    energy: cardCostFor(state, card),
     play_block: playBlockReason(state, card),
   };
 }
 
 /** 收集双方场上当前的持续状态 */
-function buildStatuses(state: BattleState): BriefStatus[] {
-  return Object.values(state.statuses).map(status => ({
+function buildStatuses(state: BattleState): BriefStatus[] {  return Object.values(state.statuses).map(status => ({
     target: state.cards[status.target]?.name ?? status.target,
     name: status.name,
     stacks: status.stacks,
     remaining: status.expiry ? status.expiry.remaining : null,
     source: status.source ? (state.cards[status.source]?.name ?? null) : null,
   }));
+}
+
+/** 收集这一场生效的战斗规则 (含双方已洗牌次数与当前加价) */
+function buildRules(state: BattleState, ai: PlayerId): BriefRules {
+  const rules = battleRules(state);
+  const opponent = otherPlayer(ai);
+  return {
+    guard: rules.guard,
+    splash: rules.splash,
+    draw_per_turn: rules.draw_per_turn,
+    recycle_limit: rules.recycle_limit,
+    recycle_penalty: rules.recycle_penalty,
+    ai_recycle: state.players[ai].recycle_count,
+    opponent_recycle: state.players[opponent].recycle_count,
+    ai_surcharge: recycleSurcharge(state, ai),
+    opponent_surcharge: recycleSurcharge(state, opponent),
+    turn_limit: rules.turn_limit,
+  };
 }
 
 /** 生成结构化简报 */
@@ -225,6 +278,7 @@ export function buildBrief(state: BattleState, ai: PlayerId = 'ENEMY', player_op
       label: item.label,
     })),
     statuses: buildStatuses(state),
+    rules: buildRules(state, ai),
     player_ops: player_ops.slice(-BRIEF_RECENT_LIMIT),
     // 事件流水 (DEBUG) 太琐碎、引擎内部问题 (卡牌库缺卡等) AI 也修不了, 都不进简报
     recent: state.log
@@ -296,6 +350,39 @@ function renderStatus(status: BriefStatus): string {
   return `${status.target} ${status.name}${stacks}${remain}${from}`;
 }
 
+/** 询问要选几张: 上下限一样就说死, 否则把范围写清楚 (弃牌允许多弃) */
+function askPickText(min: number, max: number): string {
+  return min === max ? `选 ${min} 张` : `至少 ${min} 张, 最多 ${max} 张`;
+}
+
+/** 把这一场的战斗规则压成一行 (只写与默认不同 / 与玩法相关的部分) */
+function renderRules(rules: BriefRules): string {
+  const parts: string[] = [
+    rules.guard ? '对手场上还有卡时不能直接攻击对手本人' : '可以直接攻击对手本人 (无守卫规则)',
+  ];
+  if (rules.splash > 0) {
+    parts.push(`打爆一张卡时超出其生命的伤害按 ${Math.round(rules.splash * 100)}% 传给该卡的控制者`);
+  }
+  if (rules.draw_per_turn > 0) {
+    parts.push(`每方行动开始时抽 ${rules.draw_per_turn} 张牌 (第 1 回合先手方不抽)`);
+  }
+  const quota = rules.recycle_limit > 0 ? `最多 ${rules.recycle_limit} 次` : '次数不限';
+  const price = rules.recycle_penalty > 0 ? `, 每洗一次该方上场消耗 +${rules.recycle_penalty}` : '';
+  parts.push(`牌库空了把墓地洗回牌库 (${quota}${price})`);
+  if (rules.turn_limit > 0) {
+    parts.push(`第 ${rules.turn_limit} 回合打满后按剩余生命比例判定胜负`);
+  }
+  const line = `战斗规则: ${parts.join(' | ')}`;
+  const surcharge: string[] = [];
+  if (rules.ai_surcharge > 0) {
+    surcharge.push(`你 +${rules.ai_surcharge}`);
+  }
+  if (rules.opponent_surcharge > 0) {
+    surcharge.push(`对手 +${rules.opponent_surcharge}`);
+  }
+  return surcharge.length > 0 ? `${line}\n本场上场加价 (洗牌惩罚累计): ${surcharge.join(' / ')}` : line;
+}
+
 /** * 渲染成注入提示词的紧凑文本.
  *
  * 只有 `行动方` 是 AI 时才会被调用 (由 同步.ts 决定), 所以这里不需要再判断。
@@ -306,6 +393,8 @@ export function renderBrief(brief: BattleBrief): string {
   lines.push(`回合 ${brief.turn} · 当前行动方 ${sideLabel(brief, brief.active)} (双方各行动一次后结算回合)`);
   lines.push(`${sideLabel(brief, brief.ai)} HP ${brief.ai_hp}/${brief.ai_hp_max}`);
   lines.push(`${sideLabel(brief, brief.opponent)} HP ${brief.opponent_hp}/${brief.opponent_hp_max}`);
+  // 规则放在场地之前: AI 先知道「什么不能做」, 再看自己有什么牌
+  lines.push(renderRules(brief.rules));
   // 上限为 0 表示这场战斗没开能量机制, 就不占提示词的位置了
   if (brief.ai_energy_max > 0 || brief.opponent_energy_max > 0) {
     lines.push(`${sideLabel(brief, brief.ai)} 能量 ${brief.ai_energy}/${brief.ai_energy_max}`);
@@ -326,7 +415,7 @@ export function renderBrief(brief: BattleBrief): string {
     lines.push('需要你回答:');
     for (const ask of brief.asks) {
       const options = ask.options.map(option => `${option.label}[${option.card ?? option.id}]`).join(' | ');
-      lines.push(`- ${ask.title} (选 ${ask.min}-${ask.max} 张) ${ask.detail}`);
+      lines.push(`- ${ask.title} (${askPickText(ask.min, ask.max)}) ${ask.detail}`);
       lines.push(`  可选: ${options}`);
       lines.push(`  回答方式: {"do":"answer","ask":"${ask.id}","cards":["这里填卡实例 id"]}`);
     }

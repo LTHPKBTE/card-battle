@@ -128,6 +128,43 @@ export interface BattleConfig {
    * - `'NONE'`: 不轮换, 牌库空就抽不到
    */
   recycle?: 'GRAVEYARD' | 'NONE';
+  /**
+   * 每方在自己行动开始时抽几张牌 (默认 1).
+   *
+   * 0 = 退回「只在开局发牌」的老做法. 先手方第 1 回合不抽 (先手补偿),
+   * 之后每方每次行动都抽 —— 手牌因此成为一条补给线: 想一直铺场就得拿手牌换.
+   */
+  draw_per_turn?: number;
+  /** 每场战斗最多洗几次牌 (墓地洗回); 0 / 省略 = 不限. 用完就再也洗不动, 牌库抽空即抽不到 */
+  recycle_limit?: number;
+  /**
+   * 每洗一次牌, 该方之后上场卡牌的能量消耗永久 +N (默认 1, 0 = 无代价).
+   *
+   * 洗牌 = 无限牌库, 不给代价的话「打空手牌再洗」就是无本生意;
+   * 加价让它成为一次真实的选择: 现在续一波, 还是留着牌打得更便宜.
+   */
+  recycle_penalty?: number;
+  /**
+   * 守卫规则 (默认开): 对手场上还有卡时, **普通攻击**不能直接打对方本人.
+   *
+   * 卡面效果伤害 (机读区 `DAMAGE target: OPPONENT`) 不受此限 ——
+   * 那就是「破防」的出口; 卡面写 `ignore_guard: true` 的攻击也能越过去.
+   */
+  guard?: boolean;
+  /**
+   * 溢出传伤: 攻击场上卡时, 超出其剩余生命的那部分伤害按此比例 (0~1) 传给该卡的控制者.
+   *
+   * 默认 0.5. 0 = 关掉. 有了它, 「清场」才有推进度条的收益,
+   * 也不用非得先把对手场上的卡清干净才能碰到它本人.
+   */
+  splash?: number;
+  /**
+   * 回合上限 (默认 30).
+   *
+   * 打满这么多回合还没分出胜负就按「剩余生命比例」判定 (比例相同算平局).
+   * 0 = 不限. 这是防止双方都不肯冒进而无限拖下去的保险丝.
+   */
+  turn_limit?: number;
   /** 能量曲线 (上场卡牌要花的资源); 省略 = 用 `ENERGY_DEFAULTS` */
   energy?: EnergyConfig;
   /**
@@ -171,6 +208,44 @@ export const ENERGY_DEFAULTS: Required<EnergyConfig> = {
   refill: true,
 };
 
+/** 一场战斗里「回合怎么走」的那几条规则 (战斗开始前定死, 存进存档) */
+export interface BattleRules {
+  draw_per_turn: number;
+  recycle_limit: number;
+  recycle_penalty: number;
+  guard: boolean;
+  splash: number;
+  turn_limit: number;
+}
+
+/** 规则的缺省值 (与 `BattleConfig` 里的说明逐条对应) */
+export const RULE_DEFAULTS: BattleRules = {
+  draw_per_turn: 1,
+  recycle_limit: 0,
+  recycle_penalty: 1,
+  guard: true,
+  splash: 0.5,
+  turn_limit: 30,
+};
+
+function nonNegative(value: unknown, fallback: number): number {
+  return Number.isFinite(value) ? Math.max(0, Number(value)) : fallback;
+}
+
+/** 取一份填好默认值、且已做合法化的规则 (改配置只需要动这一处) */
+export function battleRules(state: BattleState): BattleRules {
+  const config = CONFIGS.get(state) ?? {};
+  return {
+    draw_per_turn: Math.round(nonNegative(config.draw_per_turn, RULE_DEFAULTS.draw_per_turn)),
+    recycle_limit: Math.round(nonNegative(config.recycle_limit, RULE_DEFAULTS.recycle_limit)),
+    recycle_penalty: Math.round(nonNegative(config.recycle_penalty, RULE_DEFAULTS.recycle_penalty)),
+    // 守卫开关只认「明确写了 false」, 缺失 / 非法都算开
+    guard: config.guard !== false,
+    splash: Math.min(1, Math.max(0, Number.isFinite(config.splash) ? Number(config.splash) : RULE_DEFAULTS.splash)),
+    turn_limit: Math.round(nonNegative(config.turn_limit, RULE_DEFAULTS.turn_limit)),
+  };
+}
+
 /** 运行期配置 (不放进 BattleState, 避免污染存档; 读档后需重新 attach) */
 const CONFIGS = new WeakMap<BattleState, BattleConfig>();
 
@@ -204,6 +279,7 @@ function emptyPlayer(id: PlayerId, hp: number): PlayerState {
     graveyard: [],
     banished: [],
     counters: {},
+    recycle_count: 0,
   };
 }
 
@@ -228,6 +304,10 @@ export function normalizeBattleState(state: BattleState): void {
     }
     if (!Number.isFinite(record.energy)) {
       record.energy = record.energy_max;
+    }
+    // 洗牌次数是后加的字段: 旧快照里没有, 补 0 即可 (不分版本号丢弃)
+    if (!Number.isFinite(record.recycle_count)) {
+      record.recycle_count = 0;
     }
   }
   for (const card of Object.values(state.cards ?? {})) {
@@ -279,7 +359,35 @@ export function canPayEnergy(state: BattleState, card: CardInstance): boolean {
     return true;
   }
   const record = state.players[card.controller];
-  return (Number.isFinite(record?.energy) ? record.energy : 0) >= cardCost(card);
+  return (Number.isFinite(record?.energy) ? record.energy : 0) >= cardCostFor(state, card);
+}
+
+/**
+ * 这一方因为洗牌累积的上场加价.
+ *
+ * 「洗牌 = 无限牌库」必须付代价, 否则把牌打空再洗就是无本生意.
+ * 关掉能量系统时没有「消耗」可言, 加价自然也是 0.
+ */
+export function recycleSurcharge(state: BattleState, player: PlayerId): number {
+  const rules = battleRules(state);
+  if (!energyEnabled(state) || rules.recycle_penalty <= 0) {
+    return 0;
+  }
+  const count = state.players[player]?.recycle_count;
+  return Math.max(0, Number.isFinite(count) ? (count as number) : 0) * rules.recycle_penalty;
+}
+
+/**
+ * 这张卡**此刻**上场的真实能耗 (卡面费用 + 洗牌加价).
+ *
+ * 与 `cardCost` 的区别: 那个只看卡面 (卡牌定义 / 实例上快照的那个数, 不会变),
+ * 面板显示价格、判断付不付得起一律用这个.
+ */
+export function cardCostFor(state: BattleState, card: CardInstance | null | undefined): number {
+  if (!card || !energyEnabled(state)) {
+    return 0;
+  }
+  return cardCost(card) + recycleSurcharge(state, card.controller);
 }
 
 /**
@@ -458,16 +566,18 @@ function pushLog(
   detail: Record<string, unknown> | undefined,
   level: LogLevel,
   engine_only: boolean,
-): void {
-  state.log.push({
+): LogEntry {
+  const entry: LogEntry = {
     turn: state.turn,
     kind,
     level,
     message,
     ...(detail ? { detail } : {}),
     ...(engine_only ? { engine_only: true } : {}),
-  });
+  };
+  state.log.push(entry);
   trimLog(state);
+  return entry;
 }
 
 /**
@@ -563,11 +673,13 @@ function createContext(state: BattleState): EngineContext {
     },
 
     log(kind, message, detail, level) {
-      pushLog(state, kind, message, detail, level ?? LOG_KIND_LEVELS[kind], false);
+      const entry = pushLog(state, kind, message, detail, level ?? LOG_KIND_LEVELS[kind], false);
+      ctx.onFrame?.(entry);
     },
 
     logInternal(kind, message, detail, level) {
-      pushLog(state, kind, message, detail, level ?? LOG_KIND_LEVELS[kind], true);
+      const entry = pushLog(state, kind, message, detail, level ?? LOG_KIND_LEVELS[kind], true);
+      ctx.onFrame?.(entry);
     },
 
     explain(card, stat) {
@@ -891,6 +1003,9 @@ function changeShield(ctx: EngineContext, card: CardInstance, delta: number, sou
  *
  * 结算顺序是「护盾 → 生命」: 护盾先把伤害吃下来, 打空后才把溢出部分算到生命上;
  * `options.pierce` 为 true 时直接跳过护盾 (护盾一点不掉). 玩家没有护盾, 直接扣血。
+ *
+ * 打在卡上时, 超出这张卡剩余生命的那部分 (也就是「打过头的」伤害) 会按
+ * `BattleConfig.splash` 的比例传给这张卡的控制者 —— 见 `splashToOwner`.
  */
 function dealDamage(
   ctx: EngineContext,
@@ -905,20 +1020,14 @@ function dealDamage(
   const state = ctx.state;
 
   if (isPlayerTarget(target)) {
-    const player = state.players[target];
-    const actual = Math.min(value, player.hp);
-    player.hp -= actual;
-    ctx.log('COMBAT', `${PLAYER_LABEL[target]}受到 ${actual} 点伤害 (剩余 ${player.hp})`);
-    // 生命是池值: 变化后立刻重算, 「生命低于 xx」类判定不用等到回合结算
-    ctx.recalcAll();
-    checkDefeat(ctx, target);
-    return actual;
+    return damagePlayer(ctx, target, value);
   }
 
   const card = state.cards[target];
   if (!card || card.zone !== 'FIELD') {
     return 0;
   }
+  const owner = card.controller;
 
   let remaining = value;
   let absorbed = 0;
@@ -941,7 +1050,45 @@ function dealDamage(
   if (card.current.hp <= 0) {
     destroyCard(ctx, card, source);
   }
+  // 打过头的部分按比例拍给这张卡的控制者 (卡已经倒下也算 —— 清场的收益就在这里)
+  splashToOwner(ctx, owner, remaining - hp_lost);
   return absorbed + hp_lost;
+}
+
+/** 给玩家造成伤害 (护盾之类与玩家无关); 返回实际扣掉的生命 */
+function damagePlayer(ctx: EngineContext, player: PlayerId, value: number): number {
+  if (value <= 0) {
+    return 0;
+  }
+  const record = ctx.state.players[player];
+  const actual = Math.min(value, record.hp);
+  record.hp -= actual;
+  ctx.log('COMBAT', `${PLAYER_LABEL[player]}受到 ${actual} 点伤害 (剩余 ${record.hp})`);
+  // 生命是池值: 变化后立刻重算, 「生命低于 xx」类判定不用等到回合结算
+  ctx.recalcAll();
+  checkDefeat(ctx, player);
+  return actual;
+}
+
+/**
+ * 溢出传伤: 把「打死一张卡之后还剩下的那份伤害」按 `BattleConfig.splash` 的比例传给它的控制者.
+ *
+ * 比例是 0~1 (默认 0.5); 结果四舍五入, 算出来是 0 就不记日志 (免得刷屏).
+ */
+function splashToOwner(ctx: EngineContext, owner: PlayerId, overflow: number): void {
+  if (overflow <= 0) {
+    return;
+  }
+  const rate = battleRules(ctx.state).splash;
+  const splash = Math.round(overflow * rate);
+  if (splash <= 0) {
+    return;
+  }
+  ctx.log('COMBAT', `溢出伤害的 ${Math.round(rate * 100)}% 传给了${PLAYER_LABEL[owner]} (${splash} 点)`, {
+    player: owner,
+    overflow,
+  });
+  damagePlayer(ctx, owner, splash);
 }
 
 function healTarget(ctx: EngineContext, target: Target, value: number, source: string | null): number {
@@ -1035,7 +1182,12 @@ function discardPolicy(state: BattleState, player: PlayerId, count: number): str
   const weight = (card: CardInstance) => card.current.atk + card.current.shield_max + card.current.hp_max;
   return cardsInZone(state, player, 'HAND')
     .slice()
-    .sort((a, b) => cardCost(a) - cardCost(b) || weight(a) - weight(b) || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0))
+    .sort(
+      (a, b) =>
+        cardCostFor(state, a) - cardCostFor(state, b) ||
+        weight(a) - weight(b) ||
+        (a.id < b.id ? -1 : a.id > b.id ? 1 : 0),
+    )
     .slice(0, Math.max(0, count))
     .map(card => card.id);
 }
@@ -1064,13 +1216,13 @@ function syncHandLimit(ctx: EngineContext, player: PlayerId): void {
 
   const options: AskOption[] = hand.map(card => ({
     id: card.id,
-    label: `${card.name} (${cardCost(card)} 能量)`,
+    label: `${card.name} (${cardCostFor(state, card)} 能量)`,
     card: card.id,
   }));
   const fallback = discardPolicy(state, player, over);
   const detail =
     `${PLAYER_LABEL[player]}的手牌 ${hand.length} 张, 上限 ${limit} 张 —— ` +
-    `请选定要弃掉的 ${over} 张 (弃牌进墓地).\n` +
+    `至少要弃掉 ${over} 张 (弃牌进墓地); 想清手牌的话可以多弃几张, 最多弃到一张不剩.\n` +
     `不回答的话, 会在换边时自动弃掉: ${fallback
       .map(id => state.cards[id]?.name ?? id)
       .join('、')}`;
@@ -1078,9 +1230,9 @@ function syncHandLimit(ctx: EngineContext, player: PlayerId): void {
   if (existing) {
     existing.options = options;
     existing.min = over;
-    existing.max = over;
+    existing.max = hand.length;
     existing.fallback = fallback;
-    existing.title = `手牌超过上限 (${hand.length}/${limit}), 请弃掉 ${over} 张`;
+    existing.title = `手牌超过上限 (${hand.length}/${limit}), 至少弃掉 ${over} 张`;
     existing.detail = detail;
     return;
   }
@@ -1088,11 +1240,11 @@ function syncHandLimit(ctx: EngineContext, player: PlayerId): void {
   addAsk(state, {
     kind: 'DISCARD',
     controller: player,
-    title: `手牌超过上限 (${hand.length}/${limit}), 请弃掉 ${over} 张`,
+    title: `手牌超过上限 (${hand.length}/${limit}), 至少弃掉 ${over} 张`,
     detail,
     options,
     min: over,
-    max: over,
+    max: hand.length,
     fallback,
   });
   ctx.log('ZONE', `${PLAYER_LABEL[player]}的手牌 ${hand.length} 张, 超过上限 ${limit} —— 等待弃牌选择`, {
@@ -1238,6 +1390,12 @@ export interface ActionOptions {
    * 它会跟着回放步骤一起存下去, 所以重演出来的局面仍然一致.
    */
   answers?: readonly string[];
+  /**
+   * 每写一条日志回调一次 (面板用它把这次操作拆成一帧帧播出来, 见 `战斗/播放.ts`).
+   *
+   * 引擎只负责喊, 不管帧: 调用方拿到回调后自己决定留不留 (通常是记一份状态快照).
+   */
+  onFrame?: (entry: LogEntry) => void;
 }
 
 /** 在「带一份答案清单」的情况下跑一段操作, 结束后恢复上一个清单 */
@@ -1251,6 +1409,31 @@ function withAnswers<T>(ctx: EngineContext, answers: readonly string[] | undefin
     return run();
   } finally {
     ctx.answers = before;
+  }
+}
+
+/**
+ * 在「开着播放帧钩子」的情况下跑一段操作, 结束后摘掉 (上下文是跟着状态缓存的,
+ * 不摘掉的话下一次调用还在往里写帧).
+ *
+ * 钩子是可以嵌套的: 外层已经装好时, 内层不再传 `onFrame` 就不该把它顶掉 ——
+ * 否则「先攻击, 再收手」这种一次调用里, 前半段的帧就丢了.
+ */
+export function withFrameHook<T>(
+  state: BattleState,
+  onFrame: ((entry: LogEntry) => void) | undefined,
+  run: () => T,
+): T {
+  if (!onFrame) {
+    return run();
+  }
+  const ctx = getContext(state);
+  const previous = ctx.onFrame;
+  ctx.onFrame = onFrame;
+  try {
+    return run();
+  } finally {
+    ctx.onFrame = previous;
   }
 }
 
@@ -1279,7 +1462,7 @@ export function playCard(state: BattleState, card_id: string, slot?: number): bo
   const ctx = getContext(state);
   const card = state.cards[card_id];
   const record = state.players[card.controller];
-  const cost = energyEnabled(state) ? cardCost(card) : 0;
+  const cost = cardCostFor(state, card);
   if (cost > 0) {
     record.energy -= cost;
     ctx.log('SYSTEM', `支付 ${cost} 点能量上场「${card.name}」(剩余 ${record.energy}/${record.energy_max})`);
@@ -1332,18 +1515,32 @@ export function moveCardTo(state: BattleState, card_id: string, zone: Zone, slot
  * 牌库抽空时把墓地洗回牌库 (默认行为, 可用 config.recycle = 'NONE' 关闭).
  *
  * ON_RECYCLE 在洗牌之前派发, 这样「在墓地里才生效」的效果能捕捉到这次轮换.
+ *
+ * 洗牌不是白洗的: 每洗一次, 该方之后上场的卡都贵 `config.recycle_penalty` 点
+ * (见 `cardCostFor`), 而且最多只能洗 `config.recycle_limit` 次 (0 = 不限).
  */
 function recycleDeck(ctx: EngineContext, player: PlayerId): boolean {
   const state = ctx.state;
   if ((CONFIGS.get(state)?.recycle ?? 'GRAVEYARD') === 'NONE') {
     return false;
   }
-  const ids = state.players[player].graveyard.slice();
+  const record = state.players[player];
+  const rules = battleRules(state);
+  if (rules.recycle_limit > 0 && record.recycle_count >= rules.recycle_limit) {
+    ctx.log('SYSTEM', `${PLAYER_LABEL[player]}的洗牌次数已用完 (上限 ${rules.recycle_limit} 次), 牌库抽空就抽不到牌`);
+    return false;
+  }
+  const ids = record.graveyard.slice();
   if (ids.length === 0) {
     return false;
   }
 
-  ctx.log('SYSTEM', `${PLAYER_LABEL[player]}的牌库已空, 墓地 ${ids.length} 张牌洗回牌库`);
+  // 先记账再洗: 加了价之后本场不会再恢复, 日志里也能顺手把累计加价说清楚
+  record.recycle_count += 1;
+  const surcharge = recycleSurcharge(state, player);
+  const price = surcharge > 0 ? `; 本场上场消耗累计 +${surcharge}` : '';
+  const quota = rules.recycle_limit > 0 ? ` (第 ${record.recycle_count}/${rules.recycle_limit} 次)` : '';
+  ctx.log('SYSTEM', `${PLAYER_LABEL[player]}的牌库已空, 墓地 ${ids.length} 张牌洗回牌库${quota}${price}`);
   ctx.emit({ timing: 'ON_RECYCLE', actor: player, source: null, value: ids.length, data: { player } });
 
   // 洗牌过程中可能已被效果移走, 逐个确认仍在墓地
@@ -1398,13 +1595,39 @@ export function canAttack(state: BattleState, attacker_id: string): boolean {
   );
 }
 
-/** 攻击目标是否合法: 对手场上的卡, 或对手本人 */
-function isValidAttackTarget(ctx: EngineContext, attacker: CardInstance, target: Target): boolean {
+/** 攻击目标是否合法: 对手场上的卡, 或对手本人 (后者要过守卫规则) */
+function isValidAttackTarget(
+  ctx: EngineContext,
+  attacker: CardInstance,
+  target: Target,
+  options?: { ignore_guard?: boolean },
+): boolean {
   if (isPlayerTarget(target)) {
-    return target === otherPlayer(attacker.controller);
+    if (target !== otherPlayer(attacker.controller)) {
+      return false;
+    }
+    return !isGuardBlocked(ctx.state, attacker, target, options);
   }
   const card = ctx.state.cards[target];
   return Boolean(card && card.zone === 'FIELD' && card.controller !== attacker.controller);
+}
+
+/**
+ * 这一击是不是被守卫规则挡下了 (对手场上还有卡, 却想直接打脸).
+ *
+ * 单拎出来是为了让面板 / 决策层能给出「为什么打不了」的准确说法,
+ * 而不是笼统的「目标不合法」.
+ */
+export function isGuardBlocked(
+  state: BattleState,
+  attacker: CardInstance,
+  target: Target,
+  options?: { ignore_guard?: boolean },
+): boolean {
+  if (!isPlayerTarget(target) || target === attacker.controller || options?.ignore_guard) {
+    return false;
+  }
+  return battleRules(state).guard && cardsInZone(state, target, 'FIELD').length > 0;
 }
 
 /**
@@ -1412,13 +1635,14 @@ function isValidAttackTarget(ctx: EngineContext, attacker: CardInstance, target:
  *
  * 任意一步被取消都会中断后续步骤 (陷阱卡正是靠 BEFORE_DAMAGE 的 CANCEL 生效).
  * 攻击宣言一旦通过就会消耗本回合的攻击机会, 即使伤害被取消.
+ * 打脸 (目标是玩家) 还要过守卫规则, 见 `isGuardBlocked`.
  * 不负责 drain, 由调用方 (对外 API / 顶层操作) 统一收尾.
  */
 function performAttack(
   ctx: EngineContext,
   attacker: CardInstance | null,
   target: Target,
-  options?: { pierce?: boolean },
+  options?: { pierce?: boolean; ignore_guard?: boolean },
 ): boolean {
   const state = ctx.state;
   if (state.finished) {
@@ -1427,8 +1651,11 @@ function performAttack(
   if (!attacker || attacker.zone !== 'FIELD' || attacker.attacked_this_turn) {
     return false;
   }
-  if (!isValidAttackTarget(ctx, attacker, target)) {
-    ctx.log('SYSTEM', `无效的攻击目标: ${attacker.name} → ${target}`, { attacker: attacker.id, target }, 'WARN');
+  if (!isValidAttackTarget(ctx, attacker, target, options)) {
+    const reason = isGuardBlocked(state, attacker, target, options)
+      ? `${PLAYER_LABEL[target as PlayerId]}场上还有卡, 普通攻击只能打场上的卡 (除非效果写明无视守卫)`
+      : `无效的攻击目标: ${attacker.name} → ${target}`;
+    ctx.log('SYSTEM', reason, { attacker: attacker.id, target }, 'WARN');
     return false;
   }
 
@@ -1468,7 +1695,7 @@ export function attack(
   state: BattleState,
   attacker_id: string,
   target: Target,
-  options?: { pierce?: boolean } & ActionOptions,
+  options?: { pierce?: boolean; ignore_guard?: boolean } & ActionOptions,
 ): boolean {
   const ctx = getContext(state);
   return withAnswers(ctx, options?.answers, () => {
@@ -1558,10 +1785,14 @@ export function activate(
 }
 
 /**
- * 让某一方开始行动: 恢复该方场上的攻击次数, 派发 SIDE_START.
+ * 让某一方开始行动: 恢复该方场上的攻击次数, 补能量, 抽牌, 派发 SIDE_START.
  *
  * 攻击次数的重置放在「该方自己行动开始时」, 所以两边各能攻击一次,
  * 而不是要等整个回合结算完.
+ *
+ * 顺序是有意的: 补能量 → 抽牌 → SIDE_START.
+ * 抽到的牌当回合就能上场, ON_DRAW 之类的效果也能在本方行动里立刻生效.
+ * 唯一的例外是**第 1 回合的先手方不抽** —— 不然先手等于白多一张牌 (先手补偿).
  */
 function beginSide(ctx: EngineContext, side: PlayerId, side_index: number): void {
   const state = ctx.state;
@@ -1573,9 +1804,22 @@ function beginSide(ctx: EngineContext, side: PlayerId, side_index: number): void
   }
   state.players[side].counters = {};
   syncPlayerEnergy(state, side);
+
+  const draw = state.turn === 1 && side_index === 0 ? 0 : battleRules(state).draw_per_turn;
+  if (draw > 0) {
+    drawFor(ctx, side, draw);
+  }
+
   const record = state.players[side];
-  const energy = energyEnabled(state) ? ` (能量 ${record.energy}/${record.energy_max})` : '';
-  ctx.log('SYSTEM', `第 ${state.turn} 回合 · ${PLAYER_LABEL[side]}行动开始${energy}`, { side, side_index });
+  const parts: string[] = [];
+  if (energyEnabled(state)) {
+    parts.push(`能量 ${record.energy}/${record.energy_max}`);
+  }
+  if (draw > 0) {
+    parts.push(`抽 ${draw} 张`);
+  }
+  const tail = parts.length > 0 ? ` (${parts.join(', ')})` : '';
+  ctx.log('SYSTEM', `第 ${state.turn} 回合 · ${PLAYER_LABEL[side]}行动开始${tail}`, { side, side_index });
   ctx.emit({ timing: 'SIDE_START', actor: side, value: side_index, data: { side_index } });
 }
 
@@ -1589,7 +1833,9 @@ function beginSide(ctx: EngineContext, side: PlayerId, side_index: number): void
  */
 export function endSide(state: BattleState, side: PlayerId = state.active, options?: ActionOptions): boolean {
   const ctx = getContext(state);
-  return withAnswers(ctx, options?.answers, () => endSideInner(ctx, state, side));
+  return withFrameHook(state, options?.onFrame, () =>
+    withAnswers(ctx, options?.answers, () => endSideInner(ctx, state, side)),
+  );
 }
 
 /** `endSide` 的主体 (答案清单已经在外面装好了) */
@@ -1653,6 +1899,12 @@ function settleRound(ctx: EngineContext, ending: PlayerId): void {
   }
 
   state.turn += 1;
+  // 回合上限: 打满就按剩余生命比例收场, 免得双方都不肯冒进时无限拖下去
+  const limit = battleRules(state).turn_limit;
+  if (limit > 0 && state.turn > limit) {
+    finishByTurnLimit(ctx, limit);
+    return;
+  }
   state.active = state.first_side;
   state.active_index = 0;
   ctx.emit({ timing: 'TURN_START', actor: state.active, turn_owner: null, data: { turn: state.turn } });
@@ -1660,6 +1912,31 @@ function settleRound(ctx: EngineContext, ending: PlayerId): void {
   // 后手方交棒给下一回合的先手方 —— 这也是一次「换边」
   ctx.emit({ timing: 'SIDE_CHANGE', actor: state.active, data: { from: ending, side_index: 0 } });
   beginSide(ctx, state.active, 0);
+}
+
+/**
+ * 回合上限到了: 按「剩余生命比例」判定胜负.
+ *
+ * 用比例而不是绝对值, 因为双方生命上限可以分别设置.
+ * 比例一样就是平局 (`winner` 为 null, 但战斗确实结束了).
+ */
+function finishByTurnLimit(ctx: EngineContext, limit: number): void {
+  const state = ctx.state;
+  const ratio = (player: PlayerId) => {
+    const record = state.players[player];
+    return record.hp_max > 0 ? record.hp / record.hp_max : 0;
+  };
+  const mine = ratio('PLAYER');
+  const theirs = ratio('ENEMY');
+  const percent = (value: number) => `${Math.round(value * 100)}%`;
+  state.finished = true;
+  state.winner = mine === theirs ? null : mine > theirs ? 'PLAYER' : 'ENEMY';
+  const verdict = state.winner ? `${PLAYER_LABEL[state.winner]}获胜` : '双方平局';
+  ctx.log(
+    'SYSTEM',
+    `已达回合上限 ${limit}, 按剩余生命比例判定: 我方 ${percent(mine)} / 敌方 ${percent(theirs)} —— ${verdict}`,
+    { turn_limit: limit },
+  );
 }
 
 /**

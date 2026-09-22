@@ -22,12 +22,15 @@ import {
   canMoveCardTo,
   canPayEnergy,
   canPlayCard,
-  cardCost,
+  cardCostFor,
   endSide,
+  isGuardBlocked,
   listAsks,
   moveCardTo,
   playCard,
   resolveAsk,
+  withFrameHook,
+  type ActionOptions,
 } from '../引擎/battle.ts';
 import { isPlayerTarget, type BattleState, type PlayerId } from '../引擎/types.ts';
 
@@ -250,11 +253,12 @@ function executeOp(state: BattleState, op: unknown, side: PlayerId): DecisionOpR
     }
     if (!canPlayCard(state, card_id)) {
       // 能量不足是最常见的「看着能上场却上不了」, 单独报出来免得 AI / 玩家猜
+      const cost = cardCostFor(state, card);
       const reason =
         card.zone !== 'HAND'
           ? '不在手牌'
           : !canPayEnergy(state, card)
-            ? `能量不足 (需要 ${cardCost(card)}, 只有 ${state.players[side].energy})`
+            ? `能量不足 (需要 ${cost}, 只有 ${state.players[side].energy})`
             : '场上已满';
       return { detail: `跳过 上场 ${card.name}(${card_id}): ${reason}`, applied: false };
     }
@@ -315,6 +319,13 @@ function executeOp(state: BattleState, op: unknown, side: PlayerId): DecisionOpR
     if (!canAttack(state, card_id)) {
       return { detail: `跳过 攻击 ${card.name}(${card_id}): 不在场上或本回合已攻击`, applied: false };
     }
+    // 守卫规则挡下打脸时说清楚原因 (不读操作里的 ignore_guard —— 那是卡的能力, 走 activate 发动)
+    if (isGuardBlocked(state, card, target)) {
+      return {
+        detail: `跳过 攻击 ${card.name}(${card_id}) → 对手本人: 对手场上还有卡, 不能直接打脸`,
+        applied: false,
+      };
+    }
     if (!attack(state, card_id, target, { answers: pickAnswers(record) })) {
       return { detail: `跳过 攻击 ${card.name}(${card_id}) → ${target}: 攻击未生效`, applied: false };
     }
@@ -350,8 +361,9 @@ function executeOp(state: BattleState, op: unknown, side: PlayerId): DecisionOpR
     }
     const picked = pickCards(record, ['cards', 'card', '选择', '弃牌', 'choice']);
     if (!resolveAsk(state, ask.id, picked)) {
+      const want = ask.min === ask.max ? `要选 ${ask.min} 张` : `至少选 ${ask.min} 张 (最多 ${ask.max} 张)`;
       return {
-        detail: `跳过 回答「${ask.title}」: 要选 ${ask.min}-${ask.max} 张还在手里的卡`,
+        detail: `跳过 回答「${ask.title}」: ${want}还在手里的卡`,
         applied: false,
       };
     }
@@ -394,11 +406,15 @@ export function executeOps(state: BattleState, side: PlayerId, ops: unknown[]): 
  *
  * 执行完所有操作后**自动结束本次行动** (AI 不必写 end), 空操作数组表示直接过回合.
  * 注意结束的是「半个回合」(换边给对手), 不是整个回合 —— 双方都收手后才进入回合结算.
+ *
+ * `options.answers` 会透传给收手时的那次 `endSide`; `options.onFrame` 则罩住整次决策 ——
+ * 从第一条操作到最后的收手, 面板就是靠它把 AI 一格格播出来 (见 `战斗/播放.ts`).
  */
 export function applyDecision(
   state: BattleState,
   decision: DecisionExtract,
   ai: PlayerId = 'ENEMY',
+  options?: ActionOptions,
 ): DecisionResult {
   const result: DecisionResult = {
     ok: false,
@@ -433,28 +449,32 @@ export function applyDecision(
   }
 
   result.ok = true;
-  const log_start = state.log.length;
+  const ops = decision.ops;
+  // 整次决策 (每条操作 + 最后收手) 都在钩子里: 面板要看到 AI 一步步打, 而不是一下子全打完
+  return withFrameHook(state, options?.onFrame, () => {
+    const log_start = state.log.length;
 
-  for (const outcome of executeOps(state, ai, decision.ops)) {
-    if (outcome.applied) {
-      result.applied.push(outcome.detail);
-    } else {
-      result.ignored.push(outcome.detail);
+    for (const outcome of executeOps(state, ai, ops)) {
+      if (outcome.applied) {
+        result.applied.push(outcome.detail);
+      } else {
+        result.ignored.push(outcome.detail);
+      }
     }
-  }
 
-  if (!state.finished) {
-    // 决策块最外层也能带一份 answers: 收手时触发的技能 (SIDE_END / TURN_END) 靠它批准,
-    // 因为「结束行动」这条操作是自动补上的, AI 没有地方挂单条的 answers
-    const answers = pickAnswers((decision.value ?? {}) as Record<string, unknown>);
-    endSide(state, ai, answers === undefined ? undefined : { answers });
-    result.ended = true;
-  }
+    if (!state.finished) {
+      // 决策块最外层也能带一份 answers: 收手时触发的技能 (SIDE_END / TURN_END) 靠它批准,
+      // 因为「结束行动」这条操作是自动补上的, AI 没有地方挂单条的 answers
+      const answers = pickAnswers((decision.value ?? {}) as Record<string, unknown>);
+      endSide(state, ai, { ...options, answers });
+      result.ended = true;
+    }
 
-  result.finished = state.finished;
-  result.winner = state.winner;
-  result.log = state.log.slice(log_start).map(entry => entry.message);
-  return result;
+    result.finished = state.finished;
+    result.winner = state.winner;
+    result.log = state.log.slice(log_start).map(entry => entry.message);
+    return result;
+  });
 }
 
 /** 便捷函数: 从文本一步完成「提取 + 应用」 */

@@ -16,6 +16,7 @@ import {
   canPayEnergy,
   canPlayCard,
   cardCost,
+  cardCostFor,
   createBattle,
   drawCards,
   endSide,
@@ -27,6 +28,7 @@ import {
   listAsks,
   moveCardTo,
   playCard,
+  recycleSurcharge,
   resolveAsk,
   startBattle,
   syncPlayerEnergy,
@@ -94,6 +96,18 @@ interface BuildOptions {
   energy?: EnergyConfig;
   /** 手牌上限 (省略 = 不限) */
   hand_limit?: number;
+  /** 每方行动开始抽几张 (省略 = 引擎缺省 1) */
+  draw_per_turn?: number;
+  /** 洗牌次数上限 (省略 = 不限) */
+  recycle_limit?: number;
+  /** 每洗一次牌的加价 (省略 = 引擎缺省 1) */
+  recycle_penalty?: number;
+  /** 守卫规则 (省略 = 引擎缺省 开) */
+  guard?: boolean;
+  /** 溢出传伤比例 (省略 = 引擎缺省 0.5) */
+  splash?: number;
+  /** 回合上限 (省略 = 引擎缺省 30) */
+  turn_limit?: number;
 }
 
 function build(player_deck: string[], enemy_deck: string[] = [], options: BuildOptions = {}): BattleState {
@@ -108,6 +122,12 @@ function build(player_deck: string[], enemy_deck: string[] = [], options: BuildO
     recycle: options.recycle,
     energy: options.energy,
     hand_limit: options.hand_limit,
+    draw_per_turn: options.draw_per_turn,
+    recycle_limit: options.recycle_limit,
+    recycle_penalty: options.recycle_penalty,
+    guard: options.guard,
+    splash: options.splash,
+    turn_limit: options.turn_limit,
   });
   startBattle(state);
   return state;
@@ -174,7 +194,8 @@ section('1. 常驻修正只在来源卡位于场上时生效 (愿之芽)');
 
 section('2. 时点条件 + 代价 + 召唤 (献祭之愿 → 祈愿之星)');
 {
-  const state = build(['献祭之愿']);
+  // 关掉洗牌: 否则第 3 回合的先手抽牌会把刚进墓地的献祭之愿洗回牌库再抽上手
+  const state = build(['献祭之愿'], [], { recycle: 'NONE' });
   const sacrifice = toHand(state, 'PLAYER', '献祭之愿');
   playCard(state, sacrifice.id);
   endTurn(state);
@@ -1275,7 +1296,12 @@ section('26. 值表达式 + 控制流实战 (推演之环: 循环 / 分支 / 提
     foes[2].zone === 'FIELD' && foes[2].current.hp === 800 && foes[2].current.shield === 100,
     { zone: foes[2].zone, hp: foes[2].current.hp, shield: foes[2].current.shield },
   );
-  check('每倒下一张额外打击对手 200 (8000 → 7600)', state.players.ENEMY.hp === enemy_hp - 400, state.players.ENEMY.hp);
+  // 8000 - 400 (每倒下一张额外 200) - 700 (两张各溢出 700, 按 50% 传伤) = 6900
+  check(
+    '每倒下一张额外打击对手 200, 叠加溢出传伤 700 (8000 → 6900)',
+    state.players.ENEMY.hp === enemy_hp - 1100,
+    state.players.ENEMY.hp,
+  );
   check('每回合只能发动 1 次', activate(state, ring.id, 'sweep') === false);
 }
 
@@ -1824,6 +1850,174 @@ section('35. 日志与浮字里的技能名 (effectName / effectTitle)');
     multi.log.slice(before_multi).some(entry => entry.message === '「双效」的【效果 2】 发动'),
     multi.log.slice(before_multi).map(entry => entry.message),
   );
+}
+
+section('36. 战斗规则: 抽牌时机 / 守卫 / 溢出传伤 / 洗牌代价 / 回合上限');
+{
+  // 搭一场「我方 狂战之魂 打敌方 研究笔记」的局, 三项规则都用得上
+  const strike = (options: BuildOptions) => {
+    const state = build(['狂战之魂'], ['研究笔记'], options);
+    const knight = toHand(state, 'PLAYER', '狂战之魂');
+    playCard(state, knight.id);
+    const note = toHand(state, 'ENEMY', '研究笔记');
+    playCard(state, note.id);
+    return { state, knight, note, hp: state.players.ENEMY.hp };
+  };
+
+  // ---- 抽牌时机: 每方自己行动开始时抽, 先手方第 1 回合不抽 ----
+  const timing = build(['愿之芽', '愿之芽', '愿之芽'], ['愿之芽', '愿之芽', '愿之芽']);
+  check(
+    '第 1 回合的先手方不抽牌 (先手补偿)',
+    timing.turn === 1 && cardsInZone(timing, 'PLAYER', 'HAND').length === 0,
+    cardsInZone(timing, 'PLAYER', 'HAND').length,
+  );
+  endSide(timing, 'PLAYER');
+  check(
+    '后手方行动一开始就抽 1 张',
+    cardsInZone(timing, 'ENEMY', 'HAND').length === 1,
+    cardsInZone(timing, 'ENEMY', 'HAND').length,
+  );
+  endSide(timing, 'ENEMY');
+  check(
+    '第 2 回合起先手方行动开始也抽 1 张',
+    timing.turn === 2 && cardsInZone(timing, 'PLAYER', 'HAND').length === 1,
+    { turn: timing.turn, hand: cardsInZone(timing, 'PLAYER', 'HAND').length },
+  );
+  check(
+    '行动开始的日志里写明了抽牌',
+    timing.log.some(entry => entry.message.includes('行动开始') && entry.message.includes('抽 1 张')),
+    timing.log.map(entry => entry.message).filter(message => message.includes('行动开始')),
+  );
+
+  const no_draw = build(['愿之芽', '愿之芽'], ['愿之芽', '愿之芽'], { draw_per_turn: 0 });
+  endSide(no_draw, 'PLAYER');
+  check(
+    'draw_per_turn = 0 退回「只在开局发牌」',
+    cardsInZone(no_draw, 'ENEMY', 'HAND').length === 0,
+    cardsInZone(no_draw, 'ENEMY', 'HAND').length,
+  );
+
+  // ---- 守卫: 对手场上还有卡时打不了脸 ----
+  const guarded = strike({});
+  check(
+    '对手场上有卡时打脸被守卫挡下',
+    attack(guarded.state, guarded.knight.id, 'ENEMY') === false && guarded.state.players.ENEMY.hp === guarded.hp,
+    guarded.state.players.ENEMY.hp,
+  );
+  check(
+    '挡下时在日志里说明了原因',
+    guarded.state.log.some(entry => entry.message.includes('场上还有卡')),
+    guarded.state.log.map(entry => entry.message).filter(message => message.includes('打场上的卡')),
+  );
+  check('被挡下不算出手 (攻击次数还在)', canAttack(guarded.state, guarded.knight.id) === true);
+  check('守卫不挡「打场上的卡」', attack(guarded.state, guarded.knight.id, guarded.note.id) === true);
+
+  const unguarded = strike({ guard: false });
+  check(
+    '关掉守卫就能直接打脸 (700 点)',
+    attack(unguarded.state, unguarded.knight.id, 'ENEMY') === true &&
+      unguarded.state.players.ENEMY.hp === unguarded.hp - 700,
+    unguarded.state.players.ENEMY.hp,
+  );
+
+  // ---- 溢出传伤: 打死卡之后多出来的伤害按比例传给卡主 ----
+  // 研究笔记 400 生命 / 0 护盾: 700 伤害里 400 打死它, 多的 300 传伤
+  const splash = strike({});
+  check(
+    '溢出 300 按 50% 传给卡主 (150 点)',
+    attack(splash.state, splash.knight.id, splash.note.id) === true &&
+      splash.state.players.ENEMY.hp === splash.hp - 150,
+    splash.state.players.ENEMY.hp,
+  );
+  check(
+    '传伤写进了日志',
+    splash.state.log.some(entry => entry.message.includes('溢出伤害')),
+    splash.state.log.map(entry => entry.message).filter(message => message.includes('溢出')),
+  );
+
+  const no_splash = strike({ splash: 0 });
+  check(
+    'splash = 0 时一点不传',
+    attack(no_splash.state, no_splash.knight.id, no_splash.note.id) === true &&
+      no_splash.state.players.ENEMY.hp === no_splash.hp,
+    no_splash.state.players.ENEMY.hp,
+  );
+
+  const full_splash = strike({ splash: 1 });
+  check(
+    'splash = 1 时全额传 (300 点)',
+    attack(full_splash.state, full_splash.knight.id, full_splash.note.id) === true &&
+      full_splash.state.players.ENEMY.hp === full_splash.hp - 300,
+    full_splash.state.players.ENEMY.hp,
+  );
+
+  // 没打死就不该有传伤 (伤害全部落在卡自己身上)
+  const sturdy = build(['狂战之魂'], ['愿之芽'], {});
+  const knight4 = toHand(sturdy, 'PLAYER', '狂战之魂');
+  playCard(sturdy, knight4.id);
+  const sprout4 = toHand(sturdy, 'ENEMY', '愿之芽');
+  playCard(sturdy, sprout4.id);
+  const sturdy_hp = sturdy.players.ENEMY.hp;
+  check(
+    '没打死卡时没有溢出伤害',
+    attack(sturdy, knight4.id, sprout4.id) === true &&
+      sturdy.players.ENEMY.hp === sturdy_hp &&
+      sprout4.zone === 'FIELD',
+    sturdy.players.ENEMY.hp,
+  );
+
+  // ---- 洗牌代价: 加价 + 次数上限 ----
+  const recycle = build(['愿之芽'], [], { recycle_penalty: 2, recycle_limit: 1 });
+  const sprout = cardsInZone(recycle, 'PLAYER', 'DECK')[0];
+  moveCardTo(recycle, sprout.id, 'GRAVEYARD');
+  check('洗牌前没有加价', recycleSurcharge(recycle, 'PLAYER') === 0);
+  check('牌库抽空时把墓地洗回来并抽到牌', drawCards(recycle, 'PLAYER', 1) === 1);
+  check('洗牌次数记到了那一方头上', recycle.players.PLAYER.recycle_count === 1);
+  check('每洗一次累积 2 点上场加价', recycleSurcharge(recycle, 'PLAYER') === 2);
+  check(
+    '上场消耗带上加价 (卡面值不变)',
+    cardCost(sprout) === 0 && cardCostFor(recycle, sprout) === 2,
+    cardCostFor(recycle, sprout),
+  );
+  check(
+    '洗牌日志写明了次数与加价',
+    recycle.log.some(entry => entry.message.includes('1/1 次') && entry.message.includes('累计 +2')),
+    recycle.log.map(entry => entry.message).filter(message => message.includes('洗回牌库')),
+  );
+  moveCardTo(recycle, sprout.id, 'GRAVEYARD');
+  check('次数用完后洗不动, 也就抽不到牌', drawCards(recycle, 'PLAYER', 1) === 0);
+  check(
+    '日志说明了洗牌次数已用完',
+    recycle.log.some(entry => entry.message.includes('洗牌次数已用完')),
+    recycle.log.map(entry => entry.message).filter(message => message.includes('洗牌')),
+  );
+
+  const free_recycle = build(['愿之芽'], [], { recycle_penalty: 0 });
+  const sprout_free = cardsInZone(free_recycle, 'PLAYER', 'DECK')[0];
+  moveCardTo(free_recycle, sprout_free.id, 'GRAVEYARD');
+  check('不加价时也照样能洗回牌库', drawCards(free_recycle, 'PLAYER', 1) === 1);
+  check('recycle_penalty = 0 时洗牌不加价', recycleSurcharge(free_recycle, 'PLAYER') === 0);
+
+  // ---- 回合上限: 打满后按剩余生命比例判定 ----
+  const limited = build(['愿之芽'], ['愿之芽'], { turn_limit: 2 });
+  limited.players.PLAYER.hp = 2000; // 我方只剩 25%, 敌方还是满血
+  endTurn(limited);
+  check('没打满上限时照常继续', limited.finished === false && limited.turn === 2, limited.turn);
+  endTurn(limited);
+  check('打满后按剩余生命比例判定: 敌方获胜', limited.finished === true && limited.winner === 'ENEMY', limited.winner);
+  check(
+    '日志写明判定依据',
+    limited.log.some(entry => entry.message.includes('回合上限')),
+    limited.log.map(entry => entry.message).filter(message => message.includes('回合上限')),
+  );
+
+  const tie = build(['愿之芽'], ['愿之芽'], { turn_limit: 1 });
+  endTurn(tie);
+  check('比例相同时算平局 (但战斗确实结束)', tie.finished === true && tie.winner === null, tie.winner);
+
+  const endless = build(['愿之芽'], ['愿之芽'], { turn_limit: 0 });
+  endTurn(endless);
+  check('turn_limit = 0 时不会因为回合数结束', endless.finished === false && endless.turn === 2, endless.turn);
 }
 
 // ---------------------------------------------------------------------------

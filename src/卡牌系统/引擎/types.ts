@@ -452,6 +452,8 @@ export interface OperationSpec {
   card?: string;
   /** DAMAGE / ATTACK 专用: 无视护盾, 伤害全部打在生命上 */
   pierce?: boolean;
+  /** ATTACK 专用: 无视「对方场上还有卡就不能打脸」的守卫规则 (卡面写「无视守卫」时用) */
+  ignore_guard?: boolean;
   /** 目标区域 */
   zone?: Zone;
   /** 携带的效果定义 (APPLY_STATUS / ADD_EFFECT) */
@@ -893,6 +895,13 @@ export interface PlayerState {
   banished: string[];
   /** 每回合/每场计数器 */
   counters: Record<string, number>;
+  /**
+   * 本场战斗已经洗过几次牌 (墓地洗回牌库).
+   *
+   * 洗牌是要付代价的: 每洗一次, 该方之后上场卡牌的能量消耗都会永久 +1
+   * (代价大小与次数上限见 `BattleConfig.recycle_limit` / `recycle_penalty`).
+   */
+  recycle_count: number;
 }
 
 /** 完整战斗状态 (可整体序列化) */
@@ -1006,6 +1015,13 @@ export interface EngineContext {
    */
   logInternal(kind: LogKind, message: string, detail?: Record<string, unknown>, level?: LogLevel): void;
   /**
+   * 「播放帧」回调: 每写一条日志后触发一次 (`options.onFrame` 临时装上, 平时没有).
+   *
+   * 面板靠它把一次操作 / 一次回合结算拆成一帧帧播出来 (见 `战斗/播放.ts`): 引擎只管在
+   * 记完账之后喊一声, 要不要留帧、留几帧由调用方决定 —— 引擎不碰动画, 也不存帧.
+   */
+  onFrame?: (entry: LogEntry) => void;
+  /**
    * 把一张卡的某个数值拆成「基础值 + 每一条修正」, 用于在面板上追溯加成来源.
    *
    * 池值 (`hp` / `shield`) 不做分层运算, 返回的 contributions 为空.
@@ -1032,8 +1048,12 @@ export interface EngineContext {
   move(card: CardInstance, zone: Zone, options?: { slot?: number | null; reason?: string }): void;
   /** 抽牌 (牌库空时按配置轮换墓地), 返回实际抽到的张数 */
   draw(player: PlayerId, count?: number): number;
-  /** 让一张场上的卡发动攻击 (受 attacked_this_turn 限制); `options.pierce` = 这次攻击无视护盾 */
-  attack(attacker: CardInstance, target: Target, options?: { pierce?: boolean }): boolean;
+  /** 让一张场上的卡发动攻击 (受 attacked_this_turn 限制); `options.pierce` = 无视护盾, `ignore_guard` = 无视守卫 */
+  attack(
+    attacker: CardInstance,
+    target: Target,
+    options?: { pierce?: boolean; ignore_guard?: boolean },
+  ): boolean;
   /**
    * 造成伤害 (返回实际伤害 = 护盾吸收掉的部分 + 生命损失的部分).
    *

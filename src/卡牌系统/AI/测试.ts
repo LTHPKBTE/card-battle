@@ -100,6 +100,13 @@ section('0 规范文本');
   check('写作规范说明数值参考只是默认档位', 卡牌写作规范.includes('不是上限'));
   check('机读规范包含破盾时点与穿盾', 机读规范.includes('SHIELD_BROKEN') && 机读规范.includes('pierce'));
   check(
+    '机读规范讲清守卫与溢出传伤',
+    机读规范.includes('ignore_guard') &&
+      机读规范.includes('守卫') &&
+      机读规范.includes('溢出') &&
+      机读规范.includes('DAMAGE'),
+  );
+  check(
     '机读规范包含 ask / ask_default',
     机读规范.includes('ask_default') && 机读规范.includes('先问一下') && 机读规范.includes('"RUN" | "SKIP"'),
   );

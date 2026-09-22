@@ -292,8 +292,11 @@ registerOperation('ATTACK', (ctx, spec) => {
   if (targets.length === 0) {
     return false;
   }
-  // pierce: 这次攻击无视护盾
-  return ctx.attack(attacker, targets[0], { pierce: spec.pierce === true });
+  // pierce: 这次攻击无视护盾; ignore_guard: 这次攻击无视守卫 (可以直接打脸)
+  return ctx.attack(attacker, targets[0], {
+    pierce: spec.pierce === true,
+    ignore_guard: spec.ignore_guard === true,
+  });
 });
 
 // ---------------------------------------------------------------------------
