@@ -409,7 +409,9 @@ function hpPercent(): string {
    注意这些规则要写在 .is-ready 之后 —— 同时命中时以一次性动画为准。
    --------------------------------------------------------------------------- */
 
-/* 浮字: 技能名 / 伤害数字 */
+/* 浮字: 技能名 / 伤害数字.
+   先停 2 秒给人看清, 再用 0.6 秒淡掉 —— 时长与 App.vue 里的
+   FX_TEXT_HOLD_MS / FX_TEXT_FADE_MS 对齐 (0.2 秒淡入 / 停到 2.0 秒 / 2.6 秒没). */
 .bc-float {
   position: absolute;
   bottom: 100%;
@@ -423,7 +425,7 @@ function hpPercent(): string {
   font-weight: 700;
   white-space: nowrap;
   pointer-events: none;
-  animation: bc-float 0.9s ease-out;
+  animation: bc-float 2.6s ease-out;
 }
 
 .bc.fx-hit .bc-float {
@@ -467,20 +469,26 @@ function hpPercent(): string {
   animation: bc-fx-death 0.76s ease-in forwards;
 }
 
+/* 与 FX_TEXT_HOLD_MS / FX_TEXT_FADE_MS 对齐: 停 2 秒, 再 0.6 秒淡掉 */
 @keyframes bc-float {
   0% {
     opacity: 0;
     transform: translate(-50%, 6px);
   }
 
-  25% {
+  8% {
     opacity: 1;
     transform: translate(-50%, 0);
   }
 
+  77% {
+    opacity: 1;
+    transform: translate(-50%, -6px);
+  }
+
   100% {
     opacity: 0;
-    transform: translate(-50%, -22px);
+    transform: translate(-50%, -14px);
   }
 }
 

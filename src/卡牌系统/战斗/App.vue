@@ -2146,14 +2146,18 @@ async function askAI() {
 /** 动画种类 (对应 CSS 里的 .fx-<kind>) */
 type FxKind = 'draw' | 'play' | 'attack' | 'hit' | 'heal' | 'skill' | 'death';
 
-/** 一次动画: 种类 + 流水号 (进 key, 号变了元素就重建 → 动画得以重播) + 浮出来的文字 */
+/** 一次动画: 种类 + 流水号 (进 key, 号变了元素就重建 → 动画得以重播) */
 interface FxEntry {
   kind: FxKind;
   serial: number;
-  text: string;
 }
 
-/** 各类动画各自持续多久 (到点就把标记撤掉, 元素落回常态) */
+/**
+ * 各类动画各自持续多久 (到点就把标记撤掉, 元素落回常态).
+ *
+ * 这里管的是**卡片本身的动画** (抽卡 / 上场 / 攻击 / 受击 / 回复 / 技能光晕 / 倒下),
+ * 都是「一下就过去」的短促效果; 技能名与伤害数字那种浮字另有寿命, 见 FX_TEXT_MS.
+ */
 const FX_MS: Record<FxKind, number> = {
   draw: 640,
   play: 640,
@@ -2163,6 +2167,20 @@ const FX_MS: Record<FxKind, number> = {
   skill: 900,
   death: 760,
 };
+
+/** 浮字先实打实地停 2 秒 */
+const FX_TEXT_HOLD_MS = 2000;
+/** 再用 0.6 秒淡掉 */
+const FX_TEXT_FADE_MS = 600;
+/**
+ * 浮字总寿命 (技能名 / 伤害数字).
+ *
+ * 浮字是「刚才发生了什么」的唯一线索, 过去跟着卡片动画一起 0.9 秒就没 —— 动画短促是对的,
+ * 字却来不及看; 所以两者分开计时: 先停 2 秒给人读, 再慢慢淡掉.
+ * 组件样式里的 `bc-float` / `bt-hp-float` 关键帧按这三个数字写 (见 BattleCard.vue 与本文末尾),
+ * 改这里就要同步改那两处.
+ */
+const FX_TEXT_MS = FX_TEXT_HOLD_MS + FX_TEXT_FADE_MS;
 
 /** 一张卡在快照里要留的字段 (只留判 diff 用得上的) */
 interface CardSnap {
@@ -2190,6 +2208,13 @@ const animEnabled = ref(true);
 const fxCards = ref<Record<string, FxEntry>>({});
 /** 玩家头像上的动画 (掉血 / 回血) */
 const fxSides = ref<Partial<Record<PlayerId, FxEntry>>>({});
+/**
+ * 正在飘的浮字 (`card:<id>` / `side:<PLAYER>` → 文字).
+ *
+ * 与卡片动画分开存、分开计时: 动画 0.6 秒就播完了, 浮字却要停满 2 秒才淡
+ * (见 FX_TEXT_MS). 读完就自己没, 不需要额外状态.
+ */
+const fxTexts = ref<Record<string, string>>({});
 /** 刚倒下的卡: 在原来的格子里多停一会儿, 好让「倒下」看得见 */
 const ghosts = ref<{ side: PlayerId; slot: number; card_id: string }[]>([]);
 /** 墓地计数跳动 (每次有新卡进墓地就 +1, 当成 key 用) */
@@ -2219,7 +2244,10 @@ function armFx(key: string, ms: number, clear: () => void) {
 function setCardFx(card_id: string, kind: FxKind, text = '') {
   fxSerial += 1;
   const serial = fxSerial;
-  fxCards.value[card_id] = { kind, serial, text };
+  fxCards.value[card_id] = { kind, serial };
+  if (text) {
+    setFloat(`card:${card_id}`, text);
+  }
   armFx(`card:${card_id}`, FX_MS[kind], () => {
     // 期间又播了别的动画 (流水号变了), 就别把新的那一次撤掉
     if (fxCards.value[card_id]?.serial === serial) {
@@ -2228,10 +2256,27 @@ function setCardFx(card_id: string, kind: FxKind, text = '') {
   });
 }
 
+/**
+ * 飘一个浮字 (技能名 / 伤害数字 / 头像上的掉血数字).
+ *
+ * 寿命走 FX_TEXT_MS, 与调用方的动画寿命无关; 到点后同一处又飘过新的就只撤自己那一次.
+ */
+function setFloat(key: string, text: string) {
+  fxTexts.value[key] = text;
+  armFx(`text:${key}`, FX_TEXT_MS, () => {
+    if (fxTexts.value[key] === text) {
+      delete fxTexts.value[key];
+    }
+  });
+}
+
 function setSideFx(side: PlayerId, kind: FxKind, text = '') {
   fxSerial += 1;
   const serial = fxSerial;
-  fxSides.value[side] = { kind, serial, text };
+  fxSides.value[side] = { kind, serial };
+  if (text) {
+    setFloat(`side:${side}`, text);
+  }
   armFx(`side:${side}`, FX_MS[kind], () => {
     if (fxSides.value[side]?.serial === serial) {
       delete fxSides.value[side];
@@ -2271,6 +2316,7 @@ function resetFx() {
   fxTimers.clear();
   fxCards.value = {};
   fxSides.value = {};
+  fxTexts.value = {};
   ghosts.value = [];
   gravePulse.value = {};
 }
@@ -2465,7 +2511,7 @@ function fxSerialOf(card_id: string): number {
 
 function fxTextOf(card_id: string): string {
   void tick.value;
-  return fxCards.value[card_id]?.text ?? '';
+  return fxTexts.value[`card:${card_id}`] ?? '';
 }
 
 function sideKind(side: PlayerId): string {
@@ -2480,7 +2526,7 @@ function sideSerial(side: PlayerId): number {
 
 function sideText(side: PlayerId): string {
   void tick.value;
-  return fxSides.value[side]?.text ?? '';
+  return fxTexts.value[`side:${side}`] ?? '';
 }
 
 /** 这张卡是不是「刚倒下、还在原地演动画」的幽灵 */
@@ -3478,7 +3524,7 @@ onUnmounted(() => {
   font-weight: 700;
   white-space: nowrap;
   pointer-events: none;
-  animation: bt-hp-float 0.9s ease-out;
+  animation: bt-hp-float 2.6s ease-out;
 }
 
 .bt-player.is-hurt .bt-hp-float {
@@ -3503,20 +3549,26 @@ onUnmounted(() => {
   animation: bt-pile-pulse 0.6s ease-out;
 }
 
+/* 与 FX_TEXT_HOLD_MS / FX_TEXT_FADE_MS 对齐: 停 2 秒, 再 0.6 秒淡掉 */
 @keyframes bt-hp-float {
   0% {
     opacity: 0;
     transform: translate(-50%, 6px);
   }
 
-  25% {
+  8% {
     opacity: 1;
     transform: translate(-50%, 0);
   }
 
+  77% {
+    opacity: 1;
+    transform: translate(-50%, -6px);
+  }
+
   100% {
     opacity: 0;
-    transform: translate(-50%, -24px);
+    transform: translate(-50%, -16px);
   }
 }
 
