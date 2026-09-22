@@ -48,16 +48,30 @@
         <span class="bt-settings-hint">
           关闭拖放后, 点击卡牌 → 选择动作 → 点击目标即可完成同样的操作 (手机推荐).
         </span>
+        <label class="bt-pace" title="AI 决策里的每一个操作 (上场 / 攻击 / 发动) 播完停多久; 0 = 不播">
+          <span>AI 操作间隔</span>
+          <NumberField
+            v-model="paceAction"
+            :min="0"
+            :max="MAX_BATTLE_INTERVAL"
+            :fallback="DEFAULT_ACTION_INTERVAL"
+          />
+          <span class="bt-pace-unit">毫秒</span>
+        </label>
+        <label class="bt-pace" title="回合结算里每一件事 (触发技能 / 持续伤害 / 卡牌倒下) 播完停多久; 0 = 不播">
+          <span>结算间隔</span>
+          <NumberField
+            v-model="paceSettle"
+            :min="0"
+            :max="MAX_BATTLE_INTERVAL"
+            :fallback="DEFAULT_SETTLE_INTERVAL"
+          />
+          <span class="bt-pace-unit">毫秒</span>
+        </label>
+        <span class="bt-settings-hint">现在: {{ playbackHint }} (1000 毫秒 = 1 秒; 0 = 不播)</span>
       </section>
 
-      <div v-if="worldbookWarning" class="bt-banner warn">
-        <span>{{ worldbookWarning }}</span>
-        <button class="bt-btn" type="button" @click="refreshWorldbook">重新检测</button>
-      </div>
-      <div v-if="message" class="bt-banner info">
-        <span>{{ message }}</span>
-        <button class="bt-btn" type="button" @click="message = ''">知道了</button>
-      </div>
+      <!-- 播放条与提示都在下面的浮动提示层里 (它们不占布局, 不会挤动卡牌) -->
 
       <!-- ============ 未开始: 配置 ============ -->
       <div v-if="!state" class="bt-setup">
@@ -115,6 +129,29 @@
                 <option value="GRAVEYARD">墓地洗回</option>
                 <option value="NONE">不轮换</option>
               </select>
+            </label>
+            <label title="每方轮到自己行动的瞬间抽几张; 0 = 只在开局发牌 (先手方第 1 回合不抽)">
+              每回合抽牌 <NumberField v-model="drawPerTurn" :min="0" :max="10" :fallback="1" />
+            </label>
+            <label title="每场最多把墓地洗回牌库几次; 0 = 不限 (用完牌库抽空就真的抽不到牌)">
+              洗牌上限 <NumberField v-model="recycleLimit" :min="0" :fallback="0" />
+            </label>
+            <label title="每洗一次牌, 该方之后上场的卡永久加价这么多能量; 0 = 无代价">
+              洗牌加价 <NumberField v-model="recyclePenalty" :min="0" :fallback="1" />
+            </label>
+            <label
+              class="bt-check"
+              title="对手场上还有卡时, 普通攻击不能直接打对手本人 (效果伤害不受限制; 卡面写了「无视守卫」的攻击可以越过)"
+            >
+              <input v-model="guardRule" type="checkbox" />
+              场上还有卡就不能打脸
+            </label>
+            <label title="打死一张卡时, 超出它剩余生命的那部分伤害按这个比例传给它的控制者 (0 = 不传, 1 = 全额)">
+              溢出传伤比例
+              <NumberField v-model="splashRatio" :min="0" :max="1" :integer="false" :fallback="0.5" />
+            </label>
+            <label title="打满这么多回合后按双方剩余生命比例判定胜负; 0 = 不限">
+              回合上限 <NumberField v-model="turnLimit" :min="0" :fallback="30" />
             </label>
           </div>
         </details>
@@ -273,7 +310,7 @@
               <button
                 class="bt-btn small"
                 type="button"
-                :disabled="!canOperate('ENEMY') || actionBusy || state.active !== 'ENEMY'"
+                :disabled="!canAct('ENEMY') || actionBusy || state.active !== 'ENEMY'"
                 :title="state.active !== 'ENEMY' ? '现在不是敌方的行动' : '结束敌方的行动, 交给对手'"
                 @click="endTurn('ENEMY')"
               >
@@ -317,7 +354,7 @@
               <button
                 class="bt-btn small"
                 type="button"
-                :disabled="!canOperate('PLAYER') || actionBusy || state.active !== 'PLAYER'"
+                :disabled="!canAct('PLAYER') || actionBusy || state.active !== 'PLAYER'"
                 :title="state.active !== 'PLAYER' ? '现在不是我方的行动' : '结束我方的行动, 交给对手'"
                 @click="endTurn('PLAYER')"
               >
@@ -489,7 +526,7 @@
             v-if="waitingForAI"
             class="bt-btn small primary"
             type="button"
-            :disabled="aiBusy"
+            :disabled="aiBusy || playing"
             @click="askAI"
           >
             {{ aiBusy ? '生成中…' : '让 AI 行动' }}
@@ -592,6 +629,32 @@
         @update:reply-limit="debugReplyLimit = $event"
         @close="showDebug = false"
       />
+
+      <!-- 浮动提示层: 不参与布局, 所以提示 / 播放条出现时卡牌位置一动不动 -->
+      <div class="bt-floats" :class="{ 'is-battle': Boolean(state) }">
+        <div v-if="currentFrame" class="bt-float play">
+          <span class="bt-play-label">{{ playbackTitle }}</span>
+          <span class="bt-play-step">
+            {{ playbackIndex + 1 }} / {{ playback?.帧.length }}：{{ currentFrame.说明 }}
+          </span>
+          <button class="bt-btn small" type="button" @click="stopPlayback">跳过</button>
+        </div>
+        <div v-if="worldbookWarning" class="bt-float warn">
+          <span class="bt-float-text">{{ worldbookWarning }}</span>
+          <button class="bt-btn small" type="button" @click="refreshWorldbook">重新检测</button>
+        </div>
+        <div v-for="notice in notices" :key="notice.id" class="bt-float" :class="notice.level">
+          <span class="bt-float-text">{{ notice.text }}</span>
+          <button
+            class="bt-float-close"
+            type="button"
+            title="关掉这条提示"
+            @click="dismissNoticeById(notice.id)"
+          >
+            ✕
+          </button>
+        </div>
+      </div>
     </div>
   </div>
 </template>
@@ -605,9 +668,10 @@ import {
   battleConfig,
   canPayEnergy,
   canPlayCard,
-  cardCost,
+  cardCostFor,
   energyEnabled,
   energyMaxFor,
+  isGuardBlocked,
   listActivatable,
   type ActivatableEffect,
 } from '../引擎/battle.ts';
@@ -629,6 +693,13 @@ import {
   panelLookStyle,
   type PanelLook,
 } from '../共用/外观';
+import {
+  dismissNotice,
+  noticeDuration,
+  pushNotice,
+  type Notice,
+  type NoticeLevel,
+} from '../共用/浮动提示.ts';
 import BattleCard, { type BattleCardStatus } from './components/BattleCard.vue';
 import CardDetail from './components/CardDetail.vue';
 import DebugViewer from './components/DebugViewer.vue';
@@ -637,6 +708,18 @@ import PileViewer from './components/PileViewer.vue';
 import ReplayViewer from './components/ReplayViewer.vue';
 import { collectBattleLogs } from './日志.ts';
 import { cardAuraNames } from './详情.ts';
+import { SETTLE_TITLE, type BattlePlayback, type PlaybackFrame } from './播放.ts';
+import {
+  DEFAULT_ACTION_INTERVAL,
+  DEFAULT_SETTLE_INTERVAL,
+  MAX_BATTLE_INTERVAL,
+  describeBattlePace,
+  flushBattlePaceSave,
+  loadBattlePace,
+  onBattlePaceChanged,
+  saveBattlePace,
+  type BattlePace,
+} from './节奏.ts';
 import { DEBUG_REPLY_LIMIT_DEFAULT, collectBattleDebug, collectDebugReplies } from './调试.ts';
 import type { BattleSetup } from './schema.ts';
 import {
@@ -653,6 +736,7 @@ import {
   operateEndTurn,
   operatePlay,
   operateResolveAsk,
+  onBattlePlayback,
   requestAIDecision,
   resetPracticeSession,
   setControlBothSides,
@@ -699,7 +783,13 @@ const showDebug = ref(false);
 const showReplay = ref(false);
 /** 调试弹窗显示多少条 AI 回复 */
 const debugReplyLimit = ref(DEBUG_REPLY_LIMIT_DEFAULT);
-const message = ref('');
+/**
+ * 浮动提示 (规则见 共用/浮动提示.ts).
+ *
+ * 提示条不能挤进正常流里: 面板是一整块高度定死的板子, 塞一条横幅进去内容区就被压小,
+ * 卡牌跟着上下跳 —— 所以提示一律浮在面板上层, 条数 / 寿命由提示模块管.
+ */
+const notices = ref<Notice[]>([]);
 const isNarrow = ref(false);
 const dragEnabled = ref(true);
 const bothSides = ref(false);
@@ -708,6 +798,12 @@ const aiBusy = ref(false);
 const actionBusy = ref(false);
 const selection = ref<Selection | null>(null);
 const worldbookStatus = ref<BattleWorldbookStatus | null>(null);
+/** 正在播的内容 (AI 操作回放 / 回合结算); null = 直接看最终局面 */
+const playback = ref<BattlePlayback | null>(null);
+/** 播到第几帧 (下标) */
+const playbackIndex = ref(0);
+/** 播放节奏 (与其它面板共享的一份设置) */
+const pace = ref<BattlePace>(loadBattlePace());
 
 /** 正在查看详情的卡 (卡牌实例 id; 空串 = 没打开) */
 const detailCardId = ref('');
@@ -718,6 +814,59 @@ interface PileView {
   zone: 'DECK' | 'GRAVEYARD' | 'BANISHED';
 }
 const pileView = ref<PileView | null>(null);
+
+// ---- 浮动提示 ----
+
+/** 提示序号 (自增, 当 key 与「关哪一条」的凭据) */
+let notice_seq = 0;
+/** 信息类提示的自动消失计时 (id → timer) */
+const noticeTimers = new Map<number, number>();
+
+/** 把多余的计算器收掉 (被挤掉的提示不该再定时消失) */
+function syncNoticeTimers() {
+  const alive = new Set(notices.value.map(item => item.id));
+  for (const [id, timer] of noticeTimers) {
+    if (!alive.has(id)) {
+      viewportWindow.clearTimeout(timer);
+      noticeTimers.delete(id);
+    }
+  }
+}
+
+/** 关掉一条提示 (点 ✕ 或到点自动消失都走这里) */
+function dismissNoticeById(id: number) {
+  notices.value = dismissNotice(notices.value, id);
+  syncNoticeTimers();
+}
+
+/**
+ * 弹一条提示.
+ *
+ * 信息类 4 秒后自己消失; 错误类留着等手动关 —— 两档的判定标准见 共用/浮动提示.ts 顶部.
+ */
+function showNotice(text: string, level: NoticeLevel = 'info') {
+  notice_seq += 1;
+  const id = notice_seq;
+  notices.value = pushNotice(notices.value, { id, level, text });
+  const ms = noticeDuration(level);
+  if (ms > 0) {
+    noticeTimers.set(
+      id,
+      viewportWindow.setTimeout(() => dismissNoticeById(id), ms),
+    );
+  }
+  syncNoticeTimers();
+}
+
+/** 只是确认一下的提示 (本轮已攻击过 / 还没轮到你, 4 秒后自己消失) */
+function noticeInfo(text: string) {
+  showNotice(text, 'info');
+}
+
+/** 出岔子或「点了没反应看不出原因」的提示 (留着等手动关) */
+function noticeError(text: string) {
+  showNotice(text, 'error');
+}
 
 /** 强制重算: 引擎状态是普通对象, 变更后靠它驱动视图刷新 */
 function refresh() {
@@ -734,19 +883,16 @@ function refresh() {
  * - 无论成功、失败还是抛错, 都要 refresh(), 否则状态已经变了界面却停在旧样子.
  */
 async function runAction(action: () => Promise<boolean>): Promise<boolean> {
-  if (actionBusy.value) {
+  // 播放中看到的是「过去」的局面, 这时候不能动
+  if (actionBusy.value || playing.value) {
     return false;
   }
   actionBusy.value = true;
   try {
-    const ok = await action();
-    if (ok) {
-      // 成功就把上一次的失败提示清掉, 免得旧的报错一直挂在界面上
-      message.value = '';
-    }
-    return ok;
+    return await action();
   } catch (error) {
-    message.value = `操作失败: ${error instanceof Error ? error.message : String(error)}`;
+    // 抛错是最难看懂的一类失败 (点了没反应, 或者提示条一闪而过), 所以算错误
+    noticeError(`操作失败: ${error instanceof Error ? error.message : String(error)}`);
     return false;
   } finally {
     actionBusy.value = false;
@@ -761,9 +907,129 @@ const off_look = onPanelLookChanged(() => {
   look.value = loadPanelLook();
 });
 
+// ---- 播放 (AI 操作回放 / 回合结算) ----
+//
+// 玩法侧的一步操作在引擎里是一串日志, 打完之后变量里只有最终局面.
+// 同步层顺手把中间那几帧录了下来 (`onBattlePlayback` 送过来), 这里就负责按顺序演出来:
+// 每帧停多久看设置, 播完自动回到最终局面. 播放中锁操作 —— 界面看到的是「过去」,
+// 这时候点按钮会跟真实局面打架.
+
+/** 播放中显示的那一帧 (没有在播就是 null) */
+const currentFrame = computed<PlaybackFrame | null>(() => {
+  const active = playback.value;
+  return active ? (active.帧[playbackIndex.value] ?? null) : null;
+});
+
+/** 播放中 (或者说锁操作中) */
+const playing = computed(() => playback.value !== null);
+
+/** 进度条上的标题: 走到结算帧就改口叫「回合结算」 */
+const playbackTitle = computed(() => {
+  const frame = currentFrame.value;
+  if (!frame) {
+    return '';
+  }
+  return frame.种类 === '结算' ? SETTLE_TITLE : playback.value?.标题 ?? '';
+});
+
+const playbackHint = computed(() => describeBattlePace(pace.value));
+
+let playbackTimer: number | null = null;
+
+/** 这一帧该停多久 (0 = 这一档不播) */
+function frameInterval(frame: PlaybackFrame): number {
+  return frame.种类 === '结算' ? pace.value.结算间隔 : pace.value.操作间隔;
+}
+
+function clearPlaybackTimer() {
+  if (playbackTimer !== null) {
+    viewportWindow.clearTimeout(playbackTimer);
+    playbackTimer = null;
+  }
+}
+
+function armPlaybackTimer() {
+  clearPlaybackTimer();
+  const frame = currentFrame.value;
+  if (!frame) {
+    return;
+  }
+  playbackTimer = viewportWindow.setTimeout(advancePlayback, Math.max(0, frameInterval(frame)));
+}
+
+/** 播下一帧; 到底了就回到最终局面 */
+function advancePlayback() {
+  const active = playback.value;
+  if (!active) {
+    return;
+  }
+  if (playbackIndex.value + 1 >= active.帧.length) {
+    stopPlayback();
+    return;
+  }
+  playbackIndex.value += 1;
+  armPlaybackTimer();
+  refresh();
+}
+
+/** 停下播放 (跳过按钮 / 播完 / 关面板都走这里) */
+function stopPlayback() {
+  clearPlaybackTimer();
+  playback.value = null;
+  playbackIndex.value = 0;
+  refresh();
+}
+
+/** 播放中要干别的事 (回退 / 重开 / 结束战斗) 时先收场: 停下播放回到真局面 */
+function cancelPlayback() {
+  if (playing.value) {
+    stopPlayback();
+  }
+}
+
+/** 收到新录好的播放内容 (同步送来, 免得最终局面先闪一下) */
+function beginPlayback(next: BattlePlayback) {
+  clearPlaybackTimer();
+  // 间隔设成 0 的那一档不播
+  const 帧 = next.帧.filter(frame => frameInterval(frame) > 0);
+  if (帧.length === 0) {
+    playback.value = null;
+    playbackIndex.value = 0;
+    refresh();
+    return;
+  }
+  playback.value = { 标题: next.标题, 帧 };
+  playbackIndex.value = 0;
+  armPlaybackTimer();
+  refresh();
+}
+
+/** 设置区里的两个输入框 (改完立刻生效并落存) */
+const paceAction = computed({
+  get: () => pace.value.操作间隔,
+  set: value => {
+    pace.value = saveBattlePace({ 操作间隔: value });
+  },
+});
+const paceSettle = computed({
+  get: () => pace.value.结算间隔,
+  set: value => {
+    pace.value = saveBattlePace({ 结算间隔: value });
+  },
+});
+const off_pace = onBattlePaceChanged(() => {
+  pace.value = loadBattlePace();
+});
+
+/** 真局面里的这一边能不能操作 (播放中一律算不能) */
+function canAct(side: PlayerId): boolean {
+  return !playing.value && canOperate(side);
+}
+
 const state = computed<BattleState | null>(() => {
   void tick.value;
-  return getBattleState();
+  // 播放中给人看的是录下来的那一帧, 不是变量里的最终局面
+  return currentFrame.value?.状态 ?? getBattleState();
 });
 const mode = computed<BattleMode | null>(() => {
   void tick.value;
@@ -811,9 +1077,10 @@ function energyMaxOf(side: PlayerId): number {
   return record.energy_max > 0 ? record.energy_max : energyMaxFor(current, current.turn);
 }
 
-/** 这张手牌要花的能量 (0 = 免费, 不显示角标) */
+/** 这张手牌此刻上场所需的能量 (含洗牌加价; 0 = 免费, 不显示角标) */
 function costOf(card: CardInstance): number {
-  return cardCost(card);
+  const current = state.value;
+  return current ? cardCostFor(current, card) : 0;
 }
 
 /** 这张手牌此刻能不能上场 (缺能量 / 场上满都算不能) */
@@ -924,7 +1191,7 @@ const pendingAsk = computed<{ side: PlayerId; ask: AskRequest } | null>(() => {
     return null;
   }
   for (const side of ['PLAYER', 'ENEMY'] as PlayerId[]) {
-    if (!canOperate(side)) {
+    if (!canAct(side)) {
       continue;
     }
     const ask = listSideAsks(side)[0];
@@ -1034,7 +1301,7 @@ function fieldSlots(side: PlayerId): (CardInstance | null)[] {
 
 /** 这张卡现在能不能拖 (刚倒下的幽灵卡不能) */
 function draggableCard(card: CardInstance): boolean {
-  return dragEnabled.value && (card.zone === 'FIELD' || card.zone === 'HAND') && canOperate(card.controller);
+  return dragEnabled.value && (card.zone === 'FIELD' || card.zone === 'HAND') && canAct(card.controller);
 }
 
 /** 这个格子是不是真的空着 (幽灵卡不算占) */
@@ -1199,11 +1466,12 @@ const replayReport = computed(() => {
 
 /** 回溯弹窗点「回到此前」 */
 async function onRewind(keep: number) {
+  cancelPlayback();
   // 回退会让一整局倒着变一遍, 不作为动画演出来
   muteFx();
   const ok = await runAction(async () => rewindToStep(keep));
   if (!ok) {
-    message.value = '回退失败, 战斗保持原样 (详情见控制台).';
+    noticeError('回退失败, 战斗保持原样 (详情见控制台).');
   } else {
     showReplay.value = false;
   }
@@ -1211,7 +1479,7 @@ async function onRewind(keep: number) {
 
 function openPile(side: PlayerId, zone: PileView['zone']) {
   if (!canViewPile(side, zone)) {
-    message.value = '正式战斗看不到敌方牌库; 演习模式可以随便看。';
+    noticeInfo('正式战斗看不到敌方的牌库; 演习模式可以随便看。');
     return;
   }
   pileView.value = { side, zone };
@@ -1243,7 +1511,7 @@ async function playCardToField(card: CardInstance): Promise<boolean> {
         ? await operatePlay(card.controller, card.id, target)
         : await practicePlayFromDeck(card.controller, card.id, target);
     if (!done) {
-      message.value = '上场失败 (场上可能已满, 或不是演习模式)';
+      noticeError('上场失败 (场上可能已满, 或不是演习模式)');
     }
     return done;
   });
@@ -1265,7 +1533,7 @@ async function detailReturn() {
   const ok = await runAction(async () => {
     const done = await practiceReturnToDeck(card.controller, card.id);
     if (!done) {
-      message.value = '下场失败 (只有演习模式能把场上的卡收回牌库)';
+      noticeError('下场失败 (只有演习模式能把场上的卡收回牌库)');
     }
     return done;
   });
@@ -1287,7 +1555,7 @@ async function returnSelectedToDeck() {
   await runAction(async () => {
     const ok = await practiceReturnToDeck(sel.side, sel.card_id);
     if (!ok) {
-      message.value = '下场失败';
+      noticeError('下场失败');
     }
     return ok;
   });
@@ -1358,8 +1626,27 @@ const selectionHint = computed(() => {
   if (sel.zone === 'HAND') {
     return sel.effect_id ? '拖动到目标上或点「发动技能」' : '点击我方场上的空位把这张卡放上去';
   }
-  return sel.effect_id ? '拖动到目标上或点「发动技能」' : '点击 / 拖动到敌方卡牌或敌方头像上发起攻击';
+  if (sel.effect_id) {
+    return '拖动到目标上或点「发动技能」';
+  }
+  return guardBlocksSelection()
+    ? '对手场上还有卡, 暂时不能直接打脸 —— 先攻击对手场上的卡'
+    : '点击 / 拖动到敌方卡牌或敌方头像上发起攻击';
 });
+
+/** 当前选中的卡想打脸会被守卫规则挡下 (提示文案与「头像能否点」共用同一个判断) */
+function guardBlocksSelection(): boolean {
+  const sel = currentSelection.value;
+  const current = state.value;
+  if (!sel || sel.zone !== 'FIELD' || sel.effect_id || !current) {
+    return false;
+  }
+  const attacker = current.cards[sel.card_id];
+  if (!attacker) {
+    return false;
+  }
+  return isGuardBlocked(current, attacker, otherPlayer(sel.side));
+}
 
 /** 这张卡现在能否作为当前选择的合法目标 */
 function isTargetable(card: CardInstance): boolean {
@@ -1380,7 +1667,11 @@ function isPanelTargetable(side: PlayerId): boolean {
   if (!sel || sel.zone !== 'FIELD') {
     return false;
   }
-  return sel.effect_id ? true : side === otherPlayer(sel.side);
+  if (sel.effect_id) {
+    return true;
+  }
+  // 守卫规则把脸挡住时干脆不让它成为目标, 免得点上去才发现打不了
+  return !guardBlocksSelection() && side === otherPlayer(sel.side);
 }
 
 /** 手牌能否放到这个空位 */
@@ -1438,7 +1729,17 @@ async function performAttackWith(
 ): Promise<boolean> {
   const ok = await operateAttack(side, card_id, target, answers);
   if (!ok) {
-    message.value = '攻击失败 (可能已攻击过或目标不合法)';
+    // 分两档: 「这张卡这轮已经打过了」与「被守卫挡住」自己一眼能看出来 (信息类),
+    // 其余的 (目标不合法 / 被效果打断) 看不出原因, 算错误
+    const current = getBattleState();
+    const attacker = current?.cards[card_id];
+    if (attacker && attacker.zone === 'FIELD' && attacker.attacked_this_turn) {
+      noticeInfo('这张卡本轮已经攻击过 (轮到自己行动时恢复)');
+    } else if (current && attacker && isGuardBlocked(current, attacker, target)) {
+      noticeInfo('对手场上还有卡, 不能直接打脸 —— 先攻击对手场上的卡');
+    } else {
+      noticeError('攻击没有生效: 目标不合法, 或这次攻击被打断了');
+    }
   }
   clearSelection();
   return ok;
@@ -1453,7 +1754,7 @@ async function performOnTarget(target: string) {
     await runAction(async () => {
       const ok = await operateActivate(sel.side, sel.card_id, sel.effect_id!);
       if (!ok) {
-        message.value = '技能发动失败 (条件不满足或次数已用尽)';
+        noticeError('技能发动失败 (条件不满足或次数已用尽)');
       }
       return ok;
     });
@@ -1486,7 +1787,7 @@ async function performPlay(side: PlayerId, slot: number) {
     const ok = await operatePlay(side, sel.card_id, slot);
     if (!ok) {
       const card = state.value?.cards[sel.card_id];
-      message.value = card ? `上场失败 (${blockReasonOf(card) || '现在不能上场'})` : '上场失败';
+      noticeError(card ? `上场失败 (${blockReasonOf(card) || '现在不能上场'})` : '上场失败');
     }
     return ok;
   });
@@ -1501,7 +1802,7 @@ async function activateSelected() {
   await runAction(async () => {
     const ok = await operateActivate(sel.side, sel.card_id, sel.effect_id!);
     if (!ok) {
-      message.value = '技能发动失败 (条件不满足或次数已用尽)';
+      noticeError('技能发动失败 (条件不满足或次数已用尽)');
     }
     return ok;
   });
@@ -1512,11 +1813,7 @@ async function activateSelected() {
 async function endTurnRaw(side: PlayerId, answers?: readonly string[]): Promise<boolean> {
   const ok = await operateEndTurn(side, answers);
   clearSelection();
-  // 两边都收手后引擎会直接结算并推进回合, 所以这里既可能是「换边」也可能是「新回合」
-  const current = state.value;
-  if (ok && practice.value && current && !current.finished) {
-    message.value = `回合 ${current.turn}: ${current.active === 'PLAYER' ? '我方' : '敌方'}行动`;
-  }
+  // 两边都收手后引擎会直接结算并推进回合; 轮到谁走画面中间的回合条一直在显示, 不用再弹提示
   return ok;
 }
 
@@ -1546,8 +1843,8 @@ function onCardClick(card: CardInstance) {
     void performOnTarget(card.id);
     return;
   }
-  if (!canOperate(card.controller)) {
-    message.value = practice.value ? '这张卡现在不能操作' : '还没轮到你操作这一边';
+  if (!canAct(card.controller)) {
+    noticeInfo(practice.value ? '这张卡现在不能操作' : '还没轮到你操作这一边');
     return;
   }
   toggleSelection(card);
@@ -1570,7 +1867,7 @@ function onSlotClick(side: PlayerId, index: number) {
 // ---- 拖放 ----
 
 function onDragStart(card: CardInstance, event: DragEvent) {
-  if (!dragEnabled.value || !canOperate(card.controller)) {
+  if (!dragEnabled.value || !canAct(card.controller)) {
     event.preventDefault();
     return;
   }
@@ -1670,11 +1967,17 @@ const energyRefill = ref(true);
 const first = ref<PlayerId>('PLAYER');
 const seed = ref(1);
 const recycle = ref<'GRAVEYARD' | 'NONE'>('GRAVEYARD');
+const drawPerTurn = ref(1);
+const recycleLimit = ref(0);
+const recyclePenalty = ref(1);
+const guardRule = ref(true);
+const splashRatio = ref(0.5);
+const turnLimit = ref(30);
 
 function buildSetup(): BattleSetup | null {
   const player_deck = decks.value.find(deck => deck.id === playerDeckId.value);
   if (!player_deck) {
-    message.value = '请先选择我方卡组';
+    noticeError('请先选择我方卡组');
     return null;
   }
   const enemy_deck =
@@ -1682,13 +1985,13 @@ function buildSetup(): BattleSetup | null {
       ? player_deck
       : decks.value.find(deck => deck.id === enemyDeckId.value);
   if (!enemy_deck) {
-    message.value = '请先选择敌方卡组';
+    noticeError('请先选择敌方卡组');
     return null;
   }
   const mine = resolveDeck(player_deck).卡牌.map(card => card.id);
   const theirs = resolveDeck(enemy_deck).卡牌.map(card => card.id);
   if (mine.length === 0 || theirs.length === 0) {
-    message.value = '卡组里没有可用的卡牌';
+    noticeError('卡组里没有可用的卡牌');
     return null;
   }
   return {
@@ -1707,6 +2010,12 @@ function buildSetup(): BattleSetup | null {
     能量补满: energyRefill.value,
     先手: first.value,
     牌库轮换: recycle.value,
+    每回合抽牌: drawPerTurn.value,
+    洗牌上限: recycleLimit.value,
+    洗牌惩罚: recyclePenalty.value,
+    守卫规则: guardRule.value,
+    溢出传伤: splashRatio.value,
+    回合上限: turnLimit.value,
   };
 }
 
@@ -1732,7 +2041,7 @@ async function startPractice() {
   await runAction(async () => {
     const created = await startPracticeSession(setup);
     if (!created) {
-      message.value = '正式战斗正在进行, 请先结束战斗再进入演习';
+      noticeError('正式战斗正在进行, 请先结束战斗再进入演习');
       return false;
     }
     return true;
@@ -1741,6 +2050,7 @@ async function startPractice() {
 }
 
 async function resetPractice() {
+  cancelPlayback();
   muteFx();
   await runAction(async () => {
     await resetPracticeSession();
@@ -1750,6 +2060,7 @@ async function resetPractice() {
 }
 
 async function leaveSession() {
+  cancelPlayback();
   muteFx();
   await runAction(async () => {
     await endBattleSession();
@@ -1778,26 +2089,26 @@ function togglePracticeEnergy(event: Event) {
   const enabled = (event.target as HTMLInputElement).checked;
   energySwitch.value = enabled;
   const next = setPracticeEnergyEnabled(enabled);
-  message.value = !next
-    ? '只有演习模式能中途改能量设置'
-    : enabled
-      ? '能量已开启, 上场按卡面费用扣能量'
-      : '能量已关闭, 所有卡都能直接上场';
+  if (!next) {
+    noticeError('只有演习模式能中途改能量设置');
+  } else {
+    noticeInfo(enabled ? '能量已开启, 上场按卡面费用扣能量' : '能量已关闭, 所有卡都能直接上场');
+  }
   refresh();
 }
 
 async function askAI() {
-  if (aiBusy.value) {
+  if (aiBusy.value || playing.value) {
     return;
   }
   aiBusy.value = true;
   try {
     const ok = await requestAIDecision();
     if (!ok) {
-      message.value = '现在不需要 AI 行动';
+      noticeInfo('现在不需要 AI 行动');
     }
   } catch (error) {
-    message.value = `AI 行动失败: ${error instanceof Error ? error.message : String(error)}`;
+    noticeError(`AI 行动失败: ${error instanceof Error ? error.message : String(error)}`);
   } finally {
     aiBusy.value = false;
     refresh();
@@ -2111,7 +2422,7 @@ const readyIds = computed<Set<string>>(() => {
   }
   for (const side of ['PLAYER', 'ENEMY'] as PlayerId[]) {
     // 只有轮到的一方才谈得上「现在能发动」; 不能操作的一方也不该让人看出它能不能用
-    if (current.active !== side || !canOperate(side)) {
+    if (current.active !== side || !canAct(side)) {
       continue;
     }
     for (const item of listActivatable(current, side)) {
@@ -2177,6 +2488,8 @@ const viewportWindow: Window = (() => {
 
 let narrowMq: MediaQueryList | null = null;
 let timer: number | null = null;
+/** 播放订阅 (挂载时装上, 卸载时撤掉) */
+let off_playback: (() => void) | null = null;
 
 function syncNarrow(query: MediaQueryList | MediaQueryListEvent) {
   isNarrow.value = query.matches;
@@ -2198,6 +2511,8 @@ async function refreshWorldbook() {
 }
 
 onMounted(async () => {
+  // 播放内容一录好就立刻送过来 (不等轮询, 免得最终局面先闪一下)
+  off_playback = onBattlePlayback(beginPlayback);
   if (typeof viewportWindow.matchMedia === 'function') {
     narrowMq = viewportWindow.matchMedia(`(max-width: ${NARROW_MAX_WIDTH}px)`);
     syncNarrow(narrowMq);
@@ -2214,7 +2529,7 @@ onMounted(async () => {
     enemyDeckId.value = enemyDecks.value[0]?.id ?? '__same__';
     bothSides.value = isControllingBothSides();
   } catch (error) {
-    message.value = error instanceof Error ? error.message : String(error);
+    noticeError(error instanceof Error ? error.message : String(error));
   }
 
   refresh();
@@ -2233,6 +2548,15 @@ onUnmounted(() => {
   }
   viewportWindow.removeEventListener('keydown', onKeydown as EventListener);
   narrowMq?.removeEventListener('change', syncNarrow as EventListener);
+  off_playback?.();
+  clearPlaybackTimer();
+  // 面板卸了就别再让提示的计时器留着
+  for (const timer of noticeTimers.values()) {
+    viewportWindow.clearTimeout(timer);
+  }
+  noticeTimers.clear();
+  off_pace();
+  flushBattlePaceSave();
   off_look();
   flushPanelLookSave();
 });
@@ -2391,27 +2715,134 @@ onUnmounted(() => {
   color: var(--bt-text-secondary);
 }
 
-.bt-banner {
+/* 设置区里的「数字输入」项 (AI 操作间隔 / 结算间隔) */
+.bt-pace {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.86em;
+  cursor: pointer;
+}
+
+.bt-pace input {
+  width: 76px;
+  padding: 3px 6px;
+  border: 1px solid var(--bt-border);
+  border-radius: 6px;
+  background: rgb(0 0 0 / 0.25);
+  color: var(--bt-text);
+  font: inherit;
+  text-align: right;
+}
+
+.bt-pace-unit {
+  font-size: 0.9em;
+  color: var(--bt-text-secondary);
+}
+
+/* ---- 浮动提示层 ----
+   面板高度是定死的, 提示条要是按普通流插进去, 内容区就被压小一圈 (卡牌跟着上下跳),
+   点一次「攻击失败」整副手牌就挪一次位 —— 所以提示一律浮在棋盘的上面:
+   不参与布局, 也不挡操作 (整层不吃鼠标, 只有按钮自己接管点击). */
+.bt-floats {
+  position: absolute;
+  left: 50%;
+  bottom: 16px;
+  z-index: 4;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  width: min(680px, 86%);
+  transform: translateX(-50%);
+  pointer-events: none;
+}
+
+/* 战斗中要避让底下的操作栏 */
+.bt-floats.is-battle {
+  bottom: 62px;
+}
+
+.bt-float {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  margin: 10px 16px 0;
+  gap: 10px;
+  max-width: 100%;
   padding: 8px 12px;
-  border-radius: 8px;
+  border: 1px solid var(--bt-border);
+  border-radius: 10px;
+  background: rgb(var(--panel-tint, 22 24 33) / var(--panel-dialog-alpha, 0.96));
+  color: var(--bt-text);
+  box-shadow: 0 12px 32px rgb(0 0 0 / 0.45);
+  backdrop-filter: blur(var(--panel-dialog-blur, 10px));
+  -webkit-backdrop-filter: blur(var(--panel-dialog-blur, 10px));
   font-size: 0.86em;
 }
 
-.bt-banner.warn {
-  background: rgb(249 226 175 / 0.12);
-  border: 1px solid rgb(249 226 175 / 0.4);
+.bt-float-text {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+/* 信息: 说出来只是确认一下 (4 秒后自己消失) */
+.bt-float.info {
+  border-color: rgb(137 180 250 / 0.45);
+  color: #cfe0ff;
+}
+
+/* 错误: 出了岔子, 或「点了没反应又看不出原因」—— 留着等手动关 */
+.bt-float.error {
+  border-color: rgb(243 139 168 / 0.5);
+  color: #ffd3dd;
+}
+
+.bt-float.warn {
+  border-color: rgb(249 226 175 / 0.4);
   color: #f9e2af;
 }
 
-.bt-banner.info {
-  background: rgb(137 180 250 / 0.12);
-  border: 1px solid rgb(137 180 250 / 0.4);
-  color: #cfe0ff;
+/* 播放条 (AI 操作回放 / 回合结算): 一直在动, 所以用亮一点的高亮色区分 */
+.bt-float.play {
+  width: 100%;
+  border-color: rgb(137 180 250 / 0.5);
+  color: #dce8ff;
+}
+
+/* 只有按钮接管点击, 提示条本身不挡住下面的卡牌 */
+.bt-float button {
+  flex: none;
+  pointer-events: auto;
+}
+
+.bt-float-close {
+  padding: 0 2px;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  line-height: 1;
+  opacity: 0.65;
+  cursor: pointer;
+}
+
+.bt-float-close:hover {
+  opacity: 1;
+}
+
+.bt-play-label {
+  flex: none;
+  padding: 1px 8px;
+  border-radius: 999px;
+  background: rgb(137 180 250 / 0.28);
+  font-size: 0.92em;
+}
+
+/* 帧号与说明: 说明太长就省略, 不要挤掉跳过按钮 */
+.bt-play-step {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 /* ---- 配置界面 ---- */
@@ -2924,7 +3355,10 @@ onUnmounted(() => {
   padding: 16px 18px;
   border: 1px solid var(--bt-border);
   border-radius: 14px;
-  background: var(--bt-panel);
+  /* 与游戏里其它弹窗一样走「弹窗」那一档 (见 共用/外观.ts) */
+  background: rgb(var(--panel-tint, 22 24 33) / var(--panel-dialog-alpha, 0.96));
+  backdrop-filter: blur(var(--panel-dialog-blur, 10px));
+  -webkit-backdrop-filter: blur(var(--panel-dialog-blur, 10px));
   box-shadow: 0 18px 44px rgb(0 0 0 / 0.45);
 }
 
