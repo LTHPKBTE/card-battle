@@ -3405,6 +3405,10 @@ onUnmounted(() => {
   width: 100%;
   height: 100%;
   padding: 0;
+  /* 卡面数值由 BattleCard.vue 读这两个变量 (窄屏卡只好更窄):
+     两列时连「攻 500 +200」都塞不下, 而最长那一行也只得改成一列加允许换行 */
+  --bt-stat-columns: 1fr;
+  --bt-stat-wrap: wrap;
 }
 
 .bt-overlay.is-narrow .bt-main {
@@ -3434,11 +3438,6 @@ onUnmounted(() => {
   /* 卡面数值要带「+200」这类加成位, 太窄数字就会越过卡框盖到隔壁去 */
   flex: 1 1 116px;
   min-width: 112px;
-}
-
-/* 窄屏卡面数值改一列 (BattleCard.vue 读这个变量): 两列时连「攻 500 +200」都塞不下 */
-.bt-overlay.is-narrow {
-  --bt-stat-columns: 1fr;
 }
 
 .bt-overlay.is-narrow .bt-player {

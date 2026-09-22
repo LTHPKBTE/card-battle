@@ -295,6 +295,9 @@ function hpPercent(): string {
   align-items: baseline;
   gap: 4px;
   min-width: 0;
+  /* 窄屏时面板会把 --bt-stat-wrap 设成 wrap: 就算改用一列, 「HP 1500/1500 +200」
+     最长那一行仍可能比卡面宽 —— 宁可让「+200」掉到下一行, 也不要冲出卡框 */
+  flex-wrap: var(--bt-stat-wrap, nowrap);
   white-space: nowrap;
 }
 
