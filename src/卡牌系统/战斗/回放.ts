@@ -48,6 +48,16 @@ function deepClone<T>(value: T): T {
   }
 }
 
+/**
+ * 复制一份战斗状态 (每一份互不影响).
+ *
+ * 播放帧要用它: 引擎在结算过程中会一直改同一份状态, 不留快照的话
+ * 回头看每一帧都是最终样子.
+ */
+export function cloneBattleState(state: BattleState): BattleState {
+  return deepClone(state);
+}
+
 /** 短指纹 (djb2 → base36): 同一个字符串必然得到同一个结果 */
 export function hashText(text: string): string {
   let hash = 5381;
