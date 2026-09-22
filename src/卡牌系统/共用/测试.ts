@@ -5,6 +5,14 @@
 import { formatSize, jsonBytes } from './体积.ts';
 import { normalizeNumberInput, numberInputFallback, resolveNumberInput } from './数字.ts';
 import {
+  ERROR_NOTICE_MS,
+  INFO_NOTICE_MS,
+  dismissNotice,
+  noticeDuration,
+  pushNotice,
+  type Notice,
+} from './浮动提示.ts';
+import {
   DEFAULT_DIALOG_ALPHA,
   DEFAULT_DIALOG_BLUR,
   DEFAULT_PANEL_ALPHA,
@@ -186,6 +194,48 @@ section('7 数据体积 (UTF-8 字节数 + B / KiB / MiB)');
   check('formatSize: 1 KiB 起换成 KiB', formatSize(1536) === '1.5 KiB', formatSize(1536));
   check('formatSize: 1 MiB 起换成 MiB', formatSize(2.5 * 1024 * 1024) === '2.50 MiB', formatSize(2.5 * 1024 * 1024));
   check('formatSize: 非法值按 0 处理', formatSize(-1) === '0' && formatSize(Number.NaN) === '0');
+}
+
+section('8 浮动提示 (信息 4 秒消失 / 错误留着 / 超量挤掉)');
+{
+  check('信息类 4 秒后自动消失', noticeDuration('info') === 4000 && INFO_NOTICE_MS === 4000);
+  check('错误类不自动消失', noticeDuration('error') === 0 && ERROR_NOTICE_MS === 0);
+
+  const one = pushNotice([], { id: 1, level: 'info', text: 'A' });
+  check('加一条进空清单', one.length === 1 && one[0].text === 'A');
+
+  const base: Notice[] = [{ id: 1, level: 'info', text: 'A' }];
+  pushNotice(base, { id: 2, level: 'info', text: 'B' });
+  check('不改原数组 (纯函数)', base.length === 1);
+
+  let infos: Notice[] = [];
+  for (let i = 1; i <= 4; i += 1) {
+    infos = pushNotice(infos, { id: i, level: 'info', text: String(i) });
+  }
+  check('超过上限挤掉最旧的信息', infos.map(item => item.id).join(',') === '2,3,4', infos);
+
+  const mixed = pushNotice(
+    [
+      { id: 1, level: 'info', text: 'A' },
+      { id: 2, level: 'error', text: 'B' },
+      { id: 3, level: 'info', text: 'C' },
+    ],
+    { id: 4, level: 'error', text: 'D' },
+  );
+  check('优先挤信息类, 错误留下', mixed.map(item => item.id).join(',') === '2,3,4', mixed);
+
+  const errors = pushNotice(
+    [
+      { id: 1, level: 'error', text: 'A' },
+      { id: 2, level: 'error', text: 'B' },
+      { id: 3, level: 'error', text: 'C' },
+    ],
+    { id: 4, level: 'error', text: 'D' },
+  );
+  check('全是错误时挤掉最旧的', errors.map(item => item.id).join(',') === '2,3,4', errors);
+
+  check('按 id 关掉一条', dismissNotice(mixed, 3).map(item => item.id).join(',') === '2,4');
+  check('关不存在的 id 原样返回', dismissNotice(mixed, 99).length === 3);
 }
 
 console.log(`\n通过 ${passed} 项, 失败 ${failed} 项`);
