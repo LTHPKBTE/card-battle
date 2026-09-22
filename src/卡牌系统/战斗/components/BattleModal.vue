@@ -1,8 +1,8 @@
 <!-- 战斗面板内的通用弹窗外壳 (卡牌详情 / 牌库 / 日志共用) -->
 <!-- eslint-disable better-tailwindcss/no-unknown-classes -->
 <template>
-  <div class="bmd-mask" @click.self="emit('close')">
-    <div class="bmd-box" :class="{ wide }" role="dialog" aria-modal="true">
+  <div class="bmd-mask" :class="{ 'is-top': layer === 'top' }" @click.self="emit('close')">
+    <div class="bmd-box" :class="{ wide, 'is-top': layer === 'top' }" role="dialog" aria-modal="true">
       <header class="bmd-head">
         <span class="bmd-title">{{ title }}</span>
         <span v-if="subtitle" class="bmd-sub">{{ subtitle }}</span>
@@ -24,8 +24,13 @@ withDefaults(
     subtitle?: string;
     /** 宽弹窗 (牌库 / 日志用) */
     wide?: boolean;
+    /**
+     * 层级: base 是普通弹窗, top 是「从弹窗里再打开的弹窗」(牌库/墓地里点卡看详情).
+     * 文档顺序里后写的会盖住先写的, 但牌库是后写在详情后面的, 所以详情必须自己抬一层.
+     */
+    layer?: 'base' | 'top';
   }>(),
-  { subtitle: '', wide: false },
+  { subtitle: '', wide: false, layer: 'base' },
 );
 
 const emit = defineEmits<{ close: [] }>();
@@ -41,6 +46,11 @@ const emit = defineEmits<{ close: [] }>();
   justify-content: center;
   padding: 18px;
   background: rgb(4 5 8 / 0.62);
+}
+
+/* 从另一个弹窗里打开的 (卡牌详情) 抬到最高一层, 否则会被牌库/日志盖住 */
+.bmd-mask.is-top {
+  z-index: 45;
 }
 
 .bmd-box {

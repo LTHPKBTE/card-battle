@@ -1,7 +1,7 @@
 <!-- 卡牌详情弹窗: 基础资料 / 数值对比 / 效果 / 状态 / 位置 -->
 <!-- eslint-disable better-tailwindcss/no-unknown-classes, better-tailwindcss/no-concatenated-classes -->
 <template>
-  <BattleModal :title="card.name" :subtitle="subtitle" @close="emit('close')">
+  <BattleModal :title="card.name" :subtitle="subtitle" layer="top" @close="emit('close')">
     <div class="cd-stats">
       <button
         v-for="row in stats"

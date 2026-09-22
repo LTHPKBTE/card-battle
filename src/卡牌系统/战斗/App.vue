@@ -3443,7 +3443,9 @@ onUnmounted(() => {
 .bt-ask-mask {
   position: absolute;
   inset: 0;
-  z-index: 5;
+  /* 询问是「不答就进行不下去」的那种弹窗 (弃牌 / 选目标 / 确认发动), 所以放在最上层:
+     哪怕玩家正开着牌库或卡牌详情, 也得先把这一步答了 */
+  z-index: 60;
   display: flex;
   align-items: center;
   justify-content: center;
