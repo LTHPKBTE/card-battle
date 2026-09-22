@@ -283,7 +283,9 @@ function hpPercent(): string {
 
 .bc-stats {
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  /* 列数由外层面板决定: 窄屏会把它改成 1fr (见 App.vue 的窄屏样式) ——
+     两列时「攻 500 +200 / 盾 100/200」在手机宽度下塞不下, 数字会越过卡框 */
+  grid-template-columns: var(--bt-stat-columns, 1fr 1fr);
   gap: 3px 8px;
   font-variant-numeric: tabular-nums;
 }

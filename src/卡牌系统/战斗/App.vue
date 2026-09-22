@@ -2686,17 +2686,21 @@ onUnmounted(() => {
 }
 
 .bt-title {
+  flex: none;
   font-size: 1.2em;
   font-weight: 700;
   letter-spacing: 1px;
+  white-space: nowrap;
 }
 
 .bt-badge {
+  flex: none;
   padding: 1px 8px;
   border-radius: 999px;
   background: rgb(137 180 250 / 0.2);
   color: var(--bt-accent);
   font-size: 0.78em;
+  white-space: nowrap;
 }
 
 .bt-badge.practice {
@@ -2709,6 +2713,7 @@ onUnmounted(() => {
 }
 
 .bt-btn {
+  flex: none;
   padding: 5px 12px;
   border: 1px solid var(--bt-border);
   border-radius: 8px;
@@ -2716,6 +2721,8 @@ onUnmounted(() => {
   color: inherit;
   font-family: inherit;
   font-size: 0.86em;
+  /* 宽度不够时宁可换行到下一排, 也不要被挤成一列一个字 */
+  white-space: nowrap;
   cursor: pointer;
   -webkit-tap-highlight-color: transparent;
 }
@@ -2751,12 +2758,14 @@ onUnmounted(() => {
 }
 
 .bt-close {
+  flex: none;
   padding: 5px 12px;
   border: 1px solid var(--bt-border);
   border-radius: 8px;
   background: rgb(255 255 255 / 0.06);
   color: inherit;
   font-size: 0.85em;
+  white-space: nowrap;
   cursor: pointer;
 }
 
@@ -3398,8 +3407,10 @@ onUnmounted(() => {
 }
 
 .bt-overlay.is-narrow .bt-header {
+  /* 按钮排不下就换到下一排: 不然一个「日志」会被挤成竖着的两个字, 圆角也变成真圆 */
+  flex-wrap: wrap;
+  gap: 6px 8px;
   padding: 8px 12px;
-  gap: 8px;
 }
 
 .bt-overlay.is-narrow .bt-body {
@@ -3407,8 +3418,14 @@ onUnmounted(() => {
 }
 
 .bt-overlay.is-narrow .bt-slot {
-  flex: 1 1 96px;
-  min-width: 88px;
+  /* 卡面数值要带「+200」这类加成位, 太窄数字就会越过卡框盖到隔壁去 */
+  flex: 1 1 116px;
+  min-width: 112px;
+}
+
+/* 窄屏卡面数值改一列 (BattleCard.vue 读这个变量): 两列时连「攻 500 +200」都塞不下 */
+.bt-overlay.is-narrow {
+  --bt-stat-columns: 1fr;
 }
 
 .bt-overlay.is-narrow .bt-player {
