@@ -2215,6 +2215,15 @@ const fxSides = ref<Partial<Record<PlayerId, FxEntry>>>({});
  * (见 FX_TEXT_MS). 读完就自己没, 不需要额外状态.
  */
 const fxTexts = ref<Record<string, string>>({});
+/**
+ * 各卡 / 各玩家已用过的动画流水号 (只增不减).
+ *
+ * 流水号进元素的 key, 号变了元素就重建 —— 这是动画能重播的办法.
+ * 但反过来, 标记到点被撤掉时号不能掉回 0: 那会把元素重建一次, 而浮字还要停满 2 秒,
+ * 重建等于把浮字从头再播一遍 (数字会跳回去重来). 所以号的账另外记, 不跟着标记一起清.
+ */
+const fxSerials = ref<Record<string, number>>({});
+const sideSerials = ref<Partial<Record<PlayerId, number>>>({});
 /** 刚倒下的卡: 在原来的格子里多停一会儿, 好让「倒下」看得见 */
 const ghosts = ref<{ side: PlayerId; slot: number; card_id: string }[]>([]);
 /** 墓地计数跳动 (每次有新卡进墓地就 +1, 当成 key 用) */
@@ -2245,6 +2254,7 @@ function setCardFx(card_id: string, kind: FxKind, text = '') {
   fxSerial += 1;
   const serial = fxSerial;
   fxCards.value[card_id] = { kind, serial };
+  fxSerials.value[card_id] = serial;
   if (text) {
     setFloat(`card:${card_id}`, text);
   }
@@ -2274,6 +2284,7 @@ function setSideFx(side: PlayerId, kind: FxKind, text = '') {
   fxSerial += 1;
   const serial = fxSerial;
   fxSides.value[side] = { kind, serial };
+  sideSerials.value[side] = serial;
   if (text) {
     setFloat(`side:${side}`, text);
   }
@@ -2317,6 +2328,8 @@ function resetFx() {
   fxCards.value = {};
   fxSides.value = {};
   fxTexts.value = {};
+  fxSerials.value = {};
+  sideSerials.value = {};
   ghosts.value = [];
   gravePulse.value = {};
 }
@@ -2506,7 +2519,7 @@ function fxKindOf(card_id: string): string {
 
 function fxSerialOf(card_id: string): number {
   void tick.value;
-  return fxCards.value[card_id]?.serial ?? 0;
+  return fxSerials.value[card_id] ?? 0;
 }
 
 function fxTextOf(card_id: string): string {
@@ -2521,7 +2534,7 @@ function sideKind(side: PlayerId): string {
 
 function sideSerial(side: PlayerId): number {
   void tick.value;
-  return fxSides.value[side]?.serial ?? 0;
+  return sideSerials.value[side] ?? 0;
 }
 
 function sideText(side: PlayerId): string {
