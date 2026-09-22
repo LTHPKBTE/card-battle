@@ -300,7 +300,7 @@
               @dragover.prevent
               @drop.prevent="onPanelDrop('ENEMY')"
             >
-              <span v-if="sideText('ENEMY')" class="bt-float">{{ sideText('ENEMY') }}</span>
+              <span v-if="sideText('ENEMY')" class="bt-hp-float">{{ sideText('ENEMY') }}</span>
               <span class="bt-side-name">敌方</span>
               <span class="bt-hp">HP {{ state.players.ENEMY.hp }} / {{ state.players.ENEMY.hp_max }}</span>
               <span v-if="energyOn" class="bt-energy" title="上场卡牌要消耗能量, 每次轮到行动时补充">
@@ -344,7 +344,7 @@
               @dragover.prevent
               @drop.prevent="onPanelDrop('PLAYER')"
             >
-              <span v-if="sideText('PLAYER')" class="bt-float">{{ sideText('PLAYER') }}</span>
+              <span v-if="sideText('PLAYER')" class="bt-hp-float">{{ sideText('PLAYER') }}</span>
               <span class="bt-side-name">我方</span>
               <span class="bt-hp">HP {{ state.players.PLAYER.hp }} / {{ state.players.PLAYER.hp_max }}</span>
               <span v-if="energyOn" class="bt-energy" title="上场卡牌要消耗能量, 每次轮到行动时补充">
@@ -627,6 +627,7 @@
         :worldbook="worldbookStatus"
         :reply-limit="debugReplyLimit"
         @update:reply-limit="debugReplyLimit = $event"
+        @refresh="refreshWorldbook"
         @close="showDebug = false"
       />
 
@@ -642,6 +643,14 @@
         <div v-if="worldbookWarning" class="bt-float warn">
           <span class="bt-float-text">{{ worldbookWarning }}</span>
           <button class="bt-btn small" type="button" @click="refreshWorldbook">重新检测</button>
+          <button
+            class="bt-float-close"
+            type="button"
+            title="先不管这条 (调试面板里还能看到状态并重新检测)"
+            @click="dismissWorldbook"
+          >
+            ✕
+          </button>
         </div>
         <div v-for="notice in notices" :key="notice.id" class="bt-float" :class="notice.level">
           <span class="bt-float-text">{{ notice.text }}</span>
@@ -798,6 +807,13 @@ const aiBusy = ref(false);
 const actionBusy = ref(false);
 const selection = ref<Selection | null>(null);
 const worldbookStatus = ref<BattleWorldbookStatus | null>(null);
+/**
+ * 用户是否把「世界书没装好」那条提示关掉了.
+ *
+ * 只是这一阵不想看见它: 状态本身还留在调试面板里 (那边也能重新检测),
+ * 所以关掉不等于丢消息 —— 下次真的重新检测时会重新摊开.
+ */
+const worldbookDismissed = ref(false);
 /** 正在播的内容 (AI 操作回放 / 回合结算); null = 直接看最终局面 */
 const playback = ref<BattlePlayback | null>(null);
 /** 播到第几帧 (下标) */
@@ -1050,6 +1066,9 @@ const fieldSize = computed(() => {
   return current ? (battleConfig(current)?.field_size ?? 5) : 5;
 });
 const worldbookWarning = computed(() => {
+  if (worldbookDismissed.value) {
+    return '';
+  }
   const status = worldbookStatus.value;
   if (!status || status.已安装) {
     return status && !status.最新 ? '世界书条目是旧版本, 请重新导入 世界书-卡牌战斗.json' : '';
@@ -2507,7 +2526,14 @@ function requestClose() {
 }
 
 async function refreshWorldbook() {
+  // 「重新检测」是人主动要看结果的动作, 先把「关掉」撤回
+  worldbookDismissed.value = false;
   worldbookStatus.value = await battleWorldbookStatus();
+}
+
+/** 关掉那条世界书提示 (这一阵不看了) */
+function dismissWorldbook() {
+  worldbookDismissed.value = true;
 }
 
 onMounted(async () => {
@@ -2743,7 +2769,10 @@ onUnmounted(() => {
 /* ---- 浮动提示层 ----
    面板高度是定死的, 提示条要是按普通流插进去, 内容区就被压小一圈 (卡牌跟着上下跳),
    点一次「攻击失败」整副手牌就挪一次位 —— 所以提示一律浮在棋盘的上面:
-   不参与布局, 也不挡操作 (整层不吃鼠标, 只有按钮自己接管点击). */
+   不参与布局, 也不挡操作 (整层不吃鼠标, 只有按钮自己接管点击).
+   类名是这一族的根 (`bt-float-text` / `bt-float-close` 都挂在它下面):
+   头像上的掉血浮字另外叫 `bt-hp-float`, 两者千万别同名 —— 提示条会连带把浮字的
+   「往上飞一下再消失」也穿上. */
 .bt-floats {
   position: absolute;
   left: 50%;
@@ -2777,6 +2806,8 @@ onUnmounted(() => {
   backdrop-filter: blur(var(--panel-dialog-blur, 10px));
   -webkit-backdrop-filter: blur(var(--panel-dialog-blur, 10px));
   font-size: 0.86em;
+  /* 出场只淡入, 不做位移: 面板里的伤害浮字是「往上飞一下」, 提示条跟着飞会很像它出了 bug */
+  animation: bt-float-in 0.16s ease-out;
 }
 
 .bt-float-text {
@@ -2827,6 +2858,16 @@ onUnmounted(() => {
 
 .bt-float-close:hover {
   opacity: 1;
+}
+
+@keyframes bt-float-in {
+  from {
+    opacity: 0;
+  }
+
+  to {
+    opacity: 1;
+  }
 }
 
 .bt-play-label {
@@ -3422,8 +3463,9 @@ onUnmounted(() => {
   pointer-events: none;
 }
 
-/* 玩家头像上的掉血 / 回血浮字 */
-.bt-float {
+/* 玩家头像上的掉血 / 回血浮字
+   (不叫 `bt-float`: 那个名字是面板浮层里提示条一族的, 撞上了提示条就会跟着演这段动画) */
+.bt-hp-float {
   position: absolute;
   /* 贴着头像行往上浮: 敌方那一行在面板最上面, 从外面飞进来会被滚动容器裁掉 */
   bottom: 2px;
@@ -3436,14 +3478,14 @@ onUnmounted(() => {
   font-weight: 700;
   white-space: nowrap;
   pointer-events: none;
-  animation: bt-float 0.9s ease-out;
+  animation: bt-hp-float 0.9s ease-out;
 }
 
-.bt-player.is-hurt .bt-float {
+.bt-player.is-hurt .bt-hp-float {
   color: #ff8a8a;
 }
 
-.bt-player.is-heal .bt-float {
+.bt-player.is-heal .bt-hp-float {
   color: #a6e22e;
 }
 
@@ -3461,7 +3503,7 @@ onUnmounted(() => {
   animation: bt-pile-pulse 0.6s ease-out;
 }
 
-@keyframes bt-float {
+@keyframes bt-hp-float {
   0% {
     opacity: 0;
     transform: translate(-50%, 6px);

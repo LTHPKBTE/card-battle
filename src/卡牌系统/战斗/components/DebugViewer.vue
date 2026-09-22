@@ -10,9 +10,13 @@
         <span v-if="worldbook && worldbook.已安装" class="db-sec-note">
           装在: {{ worldbook.所在世界书.join(' / ') }}
         </span>
+        <span class="db-chips">
+          <button class="db-chip" type="button" @click="emit('refresh')">重新检测</button>
+        </span>
       </div>
       <p class="db-tip">
-        条目「{{ BATTLE_ENTRY_NAME }}」由酒馆按下面的条件渲染；未安装或内容过期时，AI 收不到任何战斗提示。
+        条目「{{ BATTLE_ENTRY_NAME }}」由酒馆按下面的条件渲染；未安装或内容过期时，AI
+        收不到任何战斗提示。面板上那条世界书提示关掉之后，就在这里看状态、重新检测。
       </p>
     </section>
 
@@ -158,7 +162,7 @@ const props = defineProps<{
   replyLimit: number;
 }>();
 
-const emit = defineEmits<{ close: []; 'update:replyLimit': [value: number] }>();
+const emit = defineEmits<{ close: []; 'update:replyLimit': [value: number]; refresh: [] }>();
 
 const activeCount = computed(() => props.info.segments.filter(segment => segment.active).length);
 
