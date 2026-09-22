@@ -2823,12 +2823,13 @@ onUnmounted(() => {
   position: absolute;
   left: 50%;
   bottom: 16px;
-  z-index: 4;
+  /* 要盖在弹窗之上 (牌库里「上场失败」之类的提示不能被遮住), 但低于置顶的卡牌详情 */
+  z-index: 40;
   display: flex;
   flex-direction: column;
   align-items: center;
   gap: 8px;
-  width: min(680px, 86%);
+  width: min(760px, 92%);
   transform: translateX(-50%);
   pointer-events: none;
 }
@@ -2924,12 +2925,12 @@ onUnmounted(() => {
   font-size: 0.92em;
 }
 
-/* 帧号与说明: 说明太长就省略, 不要挤掉跳过按钮 */
+/* 帧号与说明: 说明里常带卡名与技能名, 太长时宁可折行 —— 省略掉的那截正是关键信息 */
 .bt-play-step {
   flex: 1;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  line-height: 1.4;
 }
 
 /* ---- 配置界面 ---- */
