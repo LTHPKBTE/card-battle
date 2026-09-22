@@ -51,29 +51,55 @@
           <template v-if="scope.可读">
             <p v-if="scope.顶层.length === 0" class="dbg-empty">这里还没有数据。</p>
             <template v-else>
-              <div class="dbg-sub-title">主要内容</div>
-              <div v-for="row in topRows(scope)" :key="row.路径" class="dbg-row">
-                <span class="dbg-name" :title="row.路径">{{ row.路径 }}</span>
-                <span class="dbg-bar">
-                  <i :style="{ width: barWidth(row.字节数, scope.合计) }" />
-                </span>
-                <span class="dbg-size">{{ formatSize(row.字节数) }}</span>
-                <span class="dbg-meta">{{ row.类型 }}</span>
+              <!-- 列表与它的折叠条包在一起: 折叠条的悬浮范围只到这个列表为止 -->
+              <div class="dbg-block">
+                <div class="dbg-sub-title">主要内容</div>
+                <div v-for="row in topRows(scope)" :key="row.路径" class="dbg-row">
+                  <span class="dbg-name" :title="row.路径">{{ row.路径 }}</span>
+                  <span class="dbg-bar">
+                    <i :style="{ width: barWidth(row.字节数, scope.合计) }" />
+                  </span>
+                  <span class="dbg-size">{{ formatSize(row.字节数) }}</span>
+                  <span class="dbg-meta">{{ row.类型 }}</span>
+                </div>
+                <div
+                  v-if="hasMore(scope.顶层)"
+                  class="dbg-fold"
+                  :class="{ stuck: isFolded(scope.key, 'top') }"
+                  :style="foldStyle(scope, 'top')"
+                >
+                  <button class="dbg-btn small" type="button" @click="toggleFold(scope.key, 'top')">
+                    {{ isFolded(scope.key, 'top') ? '收起' : `展开另外 ${scope.顶层.length - DEBUG_LIST_LIMIT} 项` }}
+                  </button>
+                </div>
               </div>
-              <button
-                v-if="scope.顶层.length > DEBUG_TOP_LIMIT"
-                class="dbg-btn small"
-                type="button"
-                @click="toggleTop(scope.key)"
-              >
-                {{ expandedTop.includes(scope.key) ? '收起' : `展开另外 ${scope.顶层.length - DEBUG_TOP_LIMIT} 项` }}
-              </button>
 
-              <div class="dbg-sub-title">占用最大的条目</div>
-              <div v-for="row in scope.叶子" :key="row.路径" class="dbg-row leaf">
-                <span class="dbg-name" :title="row.路径">{{ row.路径 || '(空)' }}</span>
-                <span class="dbg-size">{{ formatSize(row.字节数) }}</span>
-                <span class="dbg-meta">{{ row.类型 }}</span>
+              <div class="dbg-block">
+                <div class="dbg-sub-title">占用最大的条目</div>
+                <p v-if="scope.叶子.length === 0" class="dbg-empty">这里还没有细条目。</p>
+                <div v-for="row in leafRows(scope)" :key="row.路径" class="dbg-row leaf">
+                  <span class="dbg-name" :title="row.路径">{{ row.路径 || '(空)' }}</span>
+                  <span
+                    v-if="row.标签"
+                    class="dbg-tag mini"
+                    :class="row.标签.种类 === '卡牌' ? 'card' : 'deck'"
+                    :title="`${row.标签.种类}: ${row.标签.文本}`"
+                  >
+                    {{ row.标签.文本 }}
+                  </span>
+                  <span class="dbg-size">{{ formatSize(row.字节数) }}</span>
+                  <span class="dbg-meta">{{ row.类型 }}</span>
+                </div>
+                <div
+                  v-if="hasMore(scope.叶子)"
+                  class="dbg-fold"
+                  :class="{ stuck: isFolded(scope.key, 'leaf') }"
+                  :style="foldStyle(scope, 'leaf')"
+                >
+                  <button class="dbg-btn small" type="button" @click="toggleFold(scope.key, 'leaf')">
+                    {{ isFolded(scope.key, 'leaf') ? '收起' : `展开另外 ${scope.叶子.length - DEBUG_LIST_LIMIT} 项` }}
+                  </button>
+                </div>
               </div>
             </template>
 
@@ -95,11 +121,18 @@
               清空
             </button>
           </div>
-          <p v-if="notifications.length === 0" class="dbg-empty">还没有发过通知。</p>
-          <div v-for="(item, index) in notifications" :key="index" class="dbg-note" :class="item.level ?? 'info'">
-            <span class="dbg-note-time">{{ item.at }}</span>
-            <span class="dbg-note-title">{{ item.title }}</span>
-            <span class="dbg-note-text">{{ item.message }}</span>
+          <div class="dbg-block">
+            <p v-if="notifications.length === 0" class="dbg-empty">还没有发过通知。</p>
+            <div v-for="(item, index) in notifyRows" :key="index" class="dbg-note" :class="item.level ?? 'info'">
+              <span class="dbg-note-time">{{ item.at }}</span>
+              <span class="dbg-note-title">{{ item.title }}</span>
+              <span class="dbg-note-text">{{ item.message }}</span>
+            </div>
+            <div v-if="hasMore(notifications)" class="dbg-fold" :class="{ stuck: fold.notify }">
+              <button class="dbg-btn small" type="button" @click="fold.notify = !fold.notify">
+                {{ fold.notify ? '收起' : `展开另外 ${notifications.length - DEBUG_LIST_LIMIT} 条` }}
+              </button>
+            </div>
           </div>
         </section>
       </div>
@@ -108,14 +141,14 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onUnmounted, ref } from 'vue';
+import { computed, onUnmounted, reactive, ref } from 'vue';
 
 import PanelLookSettings from '../共用/PanelLookSettings.vue';
 import { clearNotifyHistory, notifyHistory, type NotifyRecord } from '../共用/通知';
 import { flushPanelLookSave, loadPanelLook, onPanelLookChanged, panelLookStyle, type PanelLook } from '../共用/外观';
 import { formatSize } from '../共用/体积';
 import {
-  DEBUG_TOP_LIMIT,
+  DEBUG_LIST_LIMIT,
   collectDebugScopes,
   debugEnvironment,
   type EnvRow,
@@ -125,6 +158,10 @@ import {
 
 const CLOSE_EVENT = 'card-debug-close';
 const NARROW_MAX_WIDTH = 900;
+/** 悬浮的折叠条占多高 (叠两条时用来错位) */
+const FOLD_BAR_HEIGHT = 34;
+/** 折叠条离面板可视区底部多远 */
+const FOLD_BOTTOM = 8;
 
 // ---- 垫底外观 (各面板共用同一份设置) ----
 const showLook = ref(false);
@@ -140,8 +177,46 @@ const env = ref<EnvRow[]>([]);
 const notifications = ref<NotifyRecord[]>([]);
 const errorMessage = ref('');
 const expanded = ref<ScopeKey[]>([]);
-/** 顶层命名空间里被点开「展开另外 N 项」的作用域 */
-const expandedTop = ref<ScopeKey[]>([]);
+
+/**
+ * 折叠状态: 各列表默认只列 DEBUG_LIST_LIMIT 条, 展开后才给全部 (否则变量一多就刷屏).
+ * 列表一展开就是几十行, 所以展开时折叠条会贴在面板可视区底部, 不用划到底也点得到「收起」.
+ */
+const fold = reactive({
+  /** 各作用域里被展开的列表: 顶层命名空间 / 占用最大的条目 */
+  scopes: { top: [] as ScopeKey[], leaf: [] as ScopeKey[] },
+  /** 最近的通知是否展开 */
+  notify: false,
+});
+
+/** 条目比默认上限多时才有折叠按钮 */
+function hasMore(rows: readonly unknown[]): boolean {
+  return rows.length > DEBUG_LIST_LIMIT;
+}
+
+function isFolded(key: ScopeKey, list: 'top' | 'leaf'): boolean {
+  return fold.scopes[list].includes(key);
+}
+
+function toggleFold(key: ScopeKey, list: 'top' | 'leaf') {
+  const keys = fold.scopes[list];
+  const index = keys.indexOf(key);
+  if (index === -1) {
+    keys.push(key);
+  } else {
+    keys.splice(index, 1);
+  }
+}
+
+/** 同一区块里展开的折叠条依次错位, 免得两个「收起」叠在面板底部 */
+function foldStyle(scope: ScopeReport, list: 'top' | 'leaf'): Record<string, string> {
+  const opened = (['top', 'leaf'] as const).filter(
+    item => isFolded(scope.key, item) && hasMore(item === 'top' ? scope.顶层 : scope.叶子),
+  );
+  const slot = opened.indexOf(list);
+  const stack = slot === -1 ? 0 : opened.length - 1 - slot;
+  return { bottom: `${FOLD_BOTTOM + stack * FOLD_BAR_HEIGHT}px` };
+}
 
 function reload() {
   errorMessage.value = '';
@@ -165,16 +240,18 @@ function toggleJson(key: ScopeKey) {
     : [...expanded.value, key];
 }
 
-/** 顶层命名空间默认只列 DEBUG_TOP_LIMIT 条, 展开后才给全部 (否则变量一多就刷屏) */
+/** 顶层命名空间默认只列 DEBUG_LIST_LIMIT 条, 展开后才给全部 (否则变量一多就刷屏) */
 function topRows(scope: ScopeReport) {
-  return expandedTop.value.includes(scope.key) ? scope.顶层 : scope.顶层.slice(0, DEBUG_TOP_LIMIT);
+  return isFolded(scope.key, 'top') ? scope.顶层 : scope.顶层.slice(0, DEBUG_LIST_LIMIT);
 }
 
-function toggleTop(key: ScopeKey) {
-  expandedTop.value = expandedTop.value.includes(key)
-    ? expandedTop.value.filter(item => item !== key)
-    : [...expandedTop.value, key];
+/** 「占用最大的条目」同理 */
+function leafRows(scope: ScopeReport) {
+  return isFolded(scope.key, 'leaf') ? scope.叶子 : scope.叶子.slice(0, DEBUG_LIST_LIMIT);
 }
+
+/** 通知留档同理 (看回退/报错时最常刷屏的一块) */
+const notifyRows = computed(() => (fold.notify ? notifications.value : notifications.value.slice(0, DEBUG_LIST_LIMIT)));
 
 /** 进度条宽度 (占该作用域合计的比例) */
 function barWidth(bytes: number, total: number): string {
@@ -400,6 +477,27 @@ onUnmounted(() => {
   color: #f0c88a;
 }
 
+/* 行内的小标签: 说明这一行属于哪张卡 / 哪个卡组 (路径里只有 uuid, 认不出来) */
+.dbg-tag.mini {
+  flex: none;
+  max-width: 14em;
+  padding: 1px 8px;
+  overflow: hidden;
+  font-size: 0.92em;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.dbg-tag.card {
+  background: rgb(137 180 250 / 0.2);
+  color: #bdd3ff;
+}
+
+.dbg-tag.deck {
+  background: rgb(203 166 247 / 0.2);
+  color: #dcc9ff;
+}
+
 .dbg-kv {
   display: flex;
   flex-wrap: wrap;
@@ -435,6 +533,29 @@ onUnmounted(() => {
 
 .dbg-row.leaf {
   background: transparent;
+}
+
+/* 折叠条: 展开的长列表要划很久才能到底, 所以展开时把按钮贴在面板可视区底部 */
+.dbg-fold {
+  display: flex;
+  margin-top: 8px;
+}
+
+.dbg-fold .dbg-btn.small {
+  margin-top: 0;
+}
+
+.dbg-fold.stuck {
+  position: sticky;
+  bottom: 8px;
+  z-index: 4;
+  margin: 8px -6px 0;
+  padding: 6px;
+  border-radius: 10px;
+  background: rgb(14 16 24 / 0.9);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  box-shadow: 0 8px 22px rgb(0 0 0 / 0.5);
 }
 
 .dbg-name {
