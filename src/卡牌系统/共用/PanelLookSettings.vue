@@ -1,4 +1,4 @@
-<!-- 面板外观设置条: 垫底色 / 不透明度 / 高斯模糊半径 (卡牌库 / 卡组 / 战斗 共用) -->
+<!-- 面板外观设置条: 垫底色 / 不透明度 / 高斯模糊半径 + 弹窗的两档 (卡牌库 / 卡组 / 战斗 共用) -->
 <!-- eslint-disable better-tailwindcss/no-unknown-classes, better-tailwindcss/no-concatenated-classes -->
 <template>
   <div class="plk">
@@ -45,8 +45,36 @@
       <b class="plk-value">{{ look.模糊半径 }}px</b>
     </label>
 
+    <label class="plk-field" title="面板里的信息弹窗 (卡牌详情 / 设置 / 调试 / 日志 / 回放) 的不透明度">
+      <span class="plk-label">弹窗不透明度</span>
+      <input
+        class="plk-range"
+        type="range"
+        min="0"
+        max="1"
+        step="0.02"
+        :value="look.弹窗不透明度"
+        @input="onDialogAlpha"
+      />
+      <b class="plk-value">{{ look.弹窗不透明度.toFixed(2) }}</b>
+    </label>
+
+    <label class="plk-field" title="面板里的信息弹窗的虚化程度">
+      <span class="plk-label">弹窗模糊</span>
+      <input
+        class="plk-range"
+        type="range"
+        min="0"
+        :max="MAX_DIALOG_BLUR"
+        step="1"
+        :value="look.弹窗模糊半径"
+        @input="onDialogBlur"
+      />
+      <b class="plk-value">{{ look.弹窗模糊半径 }}px</b>
+    </label>
+
     <div class="plk-actions">
-      <span class="plk-hint">面板透出后面的聊天内容, 由模糊半径决定虚化程度</span>
+      <span class="plk-hint">面板透出后面的聊天内容, 由模糊半径决定虚化程度; 弹窗要读字, 默认更实</span>
       <button class="plk-btn" type="button" @click="reset">恢复默认</button>
       <button class="plk-btn" type="button" @click="emit('close')">收起</button>
     </div>
@@ -57,6 +85,7 @@
 import { onBeforeUnmount, ref, watch } from 'vue';
 
 import {
+  MAX_DIALOG_BLUR,
   MAX_PANEL_BLUR,
   defaultPanelLook,
   flushPanelLookSave,
@@ -97,6 +126,14 @@ function onAlpha(event: Event) {
 
 function onBlur(event: Event) {
   apply({ 模糊半径: Number((event.target as HTMLInputElement).value) });
+}
+
+function onDialogAlpha(event: Event) {
+  apply({ 弹窗不透明度: Number((event.target as HTMLInputElement).value) });
+}
+
+function onDialogBlur(event: Event) {
+  apply({ 弹窗模糊半径: Number((event.target as HTMLInputElement).value) });
 }
 
 function reset() {

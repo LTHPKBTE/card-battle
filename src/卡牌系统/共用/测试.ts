@@ -5,9 +5,12 @@
 import { formatSize, jsonBytes } from './体积.ts';
 import { normalizeNumberInput, numberInputFallback, resolveNumberInput } from './数字.ts';
 import {
+  DEFAULT_DIALOG_ALPHA,
+  DEFAULT_DIALOG_BLUR,
   DEFAULT_PANEL_ALPHA,
   DEFAULT_PANEL_BLUR,
   DEFAULT_PANEL_TINT,
+  MAX_DIALOG_BLUR,
   MAX_PANEL_BLUR,
   PanelLookSchema,
   defaultPanelLook,
@@ -89,11 +92,17 @@ section('5 合法输入不被改写');
 }
 
 // ---------------------------------------------------------------------------
-section('6 面板外观 (垫底色 / 不透明度 / 模糊半径)');
+section('6 面板外观 (垫底色 / 不透明度 / 模糊半径 / 弹窗)');
 {
   check('默认外观有垫底色', defaultPanelLook().垫底色 === DEFAULT_PANEL_TINT, defaultPanelLook());
   check('默认外观有模糊半径', defaultPanelLook().模糊半径 === DEFAULT_PANEL_BLUR);
   check('node 下读取返回默认值', loadPanelLook().不透明度 === DEFAULT_PANEL_ALPHA, loadPanelLook());
+  check(
+    '默认弹窗比面板实',
+    defaultPanelLook().弹窗不透明度 === DEFAULT_DIALOG_ALPHA &&
+      DEFAULT_DIALOG_ALPHA > DEFAULT_PANEL_ALPHA,
+    defaultPanelLook(),
+  );
 
   check('六位色值归一为小写带井号', normalizeHex('#AABBCC') === '#aabbcc', normalizeHex('#AABBCC'));
   check('可以省略井号', normalizeHex('0e1015') === '#0e1015');
@@ -112,20 +121,45 @@ section('6 面板外观 (垫底色 / 不透明度 / 模糊半径)');
   check('模糊半径不为负', PanelLookSchema.parse({ 模糊半径: -5 }).模糊半径 === 0);
   check('非法数值回退默认', PanelLookSchema.parse({ 不透明度: 'abc' }).不透明度 === DEFAULT_PANEL_ALPHA);
   check('缺字段时补默认值', PanelLookSchema.parse({}).垫底色 === DEFAULT_PANEL_TINT);
+  check(
+    '弹窗模糊半径同样被夹住',
+    PanelLookSchema.parse({ 弹窗模糊半径: '99' }).弹窗模糊半径 === MAX_DIALOG_BLUR &&
+      PanelLookSchema.parse({ 弹窗模糊半径: -3 }).弹窗模糊半径 === 0,
+  );
+  check('弹窗不透明度非法时回退默认', PanelLookSchema.parse({ 弹窗不透明度: 'x' }).弹窗不透明度 === DEFAULT_DIALOG_ALPHA);
 
-  const style = panelLookStyle({ 垫底色: '#0e1015', 不透明度: 0.5, 模糊半径: 12 });
+  const style = panelLookStyle({
+    垫底色: '#0e1015',
+    不透明度: 0.5,
+    模糊半径: 12,
+    弹窗不透明度: 0.8,
+    弹窗模糊半径: 6,
+  });
   check('样式带 tint 变量', style['--panel-tint'] === '14 16 21', style);
   check('样式带 alpha 变量', style['--panel-alpha'] === '0.5', style);
   check('样式带 blur 变量', style['--panel-blur'] === '12px', style);
+  check('样式带弹窗变量', style['--panel-dialog-alpha'] === '0.8' && style['--panel-dialog-blur'] === '6px', style);
   check('样式带遮罩变量', style['--panel-mask'].startsWith('rgb('), style);
 
-  check('描述包含色值与模糊', describePanelLook({ 垫底色: '#0e1015', 不透明度: 0.6, 模糊半径: 8 }).includes('8px'));
+  check(
+    '描述包含色值与模糊',
+    describePanelLook({ 垫底色: '#0e1015', 不透明度: 0.6, 模糊半径: 8, 弹窗不透明度: 0.9, 弹窗模糊半径: 4 }).includes(
+      '8px',
+    ),
+  );
 
   const saved = savePanelLook({ 垫底色: '#112233', 模糊半径: 6 });
   check('保存后立即生效', saved.垫底色 === '#112233' && loadPanelLook().模糊半径 === 6, saved);
   check('保存后旧字段保留', loadPanelLook().不透明度 === DEFAULT_PANEL_ALPHA);
+  check('保存弹窗字段不影响面板字段', savePanelLook({ 弹窗模糊半径: 3 }).弹窗模糊半径 === 3);
   check('保存非法值会被归一', savePanelLook({ 垫底色: 'nope' }).垫底色 === DEFAULT_PANEL_TINT);
-  check('恢复默认', resetPanelLook().垫底色 === DEFAULT_PANEL_TINT && loadPanelLook().模糊半径 === DEFAULT_PANEL_BLUR);
+  check(
+    '恢复默认 (含弹窗)',
+    resetPanelLook().垫底色 === DEFAULT_PANEL_TINT &&
+      loadPanelLook().模糊半径 === DEFAULT_PANEL_BLUR &&
+      loadPanelLook().弹窗不透明度 === DEFAULT_DIALOG_ALPHA &&
+      loadPanelLook().弹窗模糊半径 === DEFAULT_DIALOG_BLUR,
+  );
 
   let notified = 0;
   const off = onPanelLookChanged(() => {

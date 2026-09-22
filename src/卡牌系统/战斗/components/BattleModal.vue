@@ -50,9 +50,10 @@ const emit = defineEmits<{ close: [] }>();
   max-height: 100%;
   border: 1px solid var(--bt-border, rgb(255 255 255 / 0.12));
   border-radius: 14px;
-  background: rgb(var(--panel-tint, 22 24 33) / 0.96);
-  backdrop-filter: blur(var(--panel-blur, 10px));
-  -webkit-backdrop-filter: blur(var(--panel-blur, 10px));
+  /* 弹窗的不透明度 / 模糊单独一档 (见 共用/外观.ts): 弹窗里都是要读的字, 默认比面板实 */
+  background: rgb(var(--panel-tint, 22 24 33) / var(--panel-dialog-alpha, 0.96));
+  backdrop-filter: blur(var(--panel-dialog-blur, 10px));
+  -webkit-backdrop-filter: blur(var(--panel-dialog-blur, 10px));
   box-shadow: 0 22px 70px rgb(0 0 0 / 0.62);
   overflow: hidden;
 }
