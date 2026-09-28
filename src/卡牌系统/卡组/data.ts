@@ -6,6 +6,7 @@ import { uuidv4 } from '../共用/平台';
 import {
   DATA_LAYERS,
   availableLayers,
+  deleteLayerKey,
   layerAvailable,
   layerRank,
   mergeLayers,
@@ -551,6 +552,56 @@ export function clearDeployedDeck(): void {
     { type: 'chat' },
   );
   clearDeployedDeckId('聊天');
+}
+
+// ---- 导出 / 导入 ----
+
+/**
+ * 取某些卡组 (不传就取全部) 的完整信息; 传空数组表示一套都不要.
+ * 顺序按卡组列表的顺序 (创建时间), 导出文件读起来才顺.
+ */
+export function exportDecks(deck_ids?: readonly string[]): Deck[] {
+  const decks = loadDecks();
+  if (deck_ids === undefined) {
+    return decks;
+  }
+  const wanted = new Set(deck_ids);
+  return decks.filter(deck => wanted.has(deck.id));
+}
+
+/** 批量写入的统计 */
+export interface WriteDecksResult {
+  /** 新增的卡组数 */
+  新增: number;
+  /** 覆盖 (同 id 已存在) 的卡组数 */
+  覆盖: number;
+}
+
+/**
+ * 把一批卡组写入某一层 (同 id 覆盖, 其余新增).
+ *
+ * 这里不碰「出战卡组」指针 —— 那是每个对话 / 每张角色卡自己的选择,
+ * 导入一份卡组不应该把别人正在用的出战卡组顶掉.
+ */
+export function writeDecks(decks: readonly Deck[], layer: DataLayer): WriteDecksResult {
+  const store = loadLayerDeckStore(layer);
+  let 新增 = 0;
+  let 覆盖 = 0;
+  for (const deck of decks) {
+    if (_.has(store.卡组, deck.id)) {
+      覆盖 += 1;
+    } else {
+      新增 += 1;
+    }
+    store.卡组[deck.id] = deck;
+  }
+  saveLayerDeckStore(layer, store);
+  return { 新增, 覆盖 };
+}
+
+/** 清空某一层的卡组 (连这一层的出战卡组选择一起清; 只删本脚本自己的命名空间) */
+export function clearDeckLayer(layer: DataLayer): void {
+  deleteLayerKey(layer, DECK_CHAT_KEY);
 }
 
 // ---- 迁移 ----

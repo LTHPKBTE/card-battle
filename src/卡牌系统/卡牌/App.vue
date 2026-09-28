@@ -8,16 +8,9 @@
           <span class="clp-title">卡牌库</span>
         </div>
         <span v-if="ready" class="clp-count">共 {{ cards.length }} 张</span>
-        <button class="clp-action" type="button" :disabled="!ready" @click="handleExport">导出</button>
-        <button class="clp-action" type="button" :disabled="!ready" @click="pickImportFile">导入</button>
+        <button class="clp-action" type="button" :disabled="!ready" @click="handleExport">导出…</button>
+        <button class="clp-action" type="button" :disabled="!ready" @click="handleImport">导入…</button>
         <button class="clp-action" type="button" :disabled="!ready" @click="openAiCard">AI 生成卡牌</button>
-        <input
-          ref="importInput"
-          class="clp-file-input"
-          type="file"
-          accept=".json,.yaml,.yml,.txt,application/json"
-          @change="handleImportFile"
-        />
         <button class="clp-action" type="button" :class="{ primary: showLook }" @click="showLook = !showLook">
           外观
         </button>
@@ -90,6 +83,15 @@
               @click="openMigrate"
             >
               迁移…
+            </button>
+            <button
+              class="clp-bulk-btn"
+              type="button"
+              :disabled="checkedIds.length === 0"
+              title="把选中的卡牌导出成文件 (不带位置, 拿到的人自己选放哪)"
+              @click="exportChecked"
+            >
+              导出…
             </button>
             <button
               class="clp-bulk-btn danger"
@@ -222,16 +224,15 @@ import {
   cardLayer,
   createCard,
   deleteCardById,
-  exportLibraryToJson,
-  importLibraryFromText,
   loadCards,
   migrateCards,
-  parseLibraryExport,
   saveCard,
 } from './data';
 import { cardIssueMap } from './校验';
 import { CARD_FACTIONS, RARITIES, type Card, type CardFaction, type CardInput } from './schema';
 import { confirmDialog } from '../共用/弹窗';
+import { PANEL_CLOSE_EVENTS } from '../共用/面板';
+import { runShareExport, runShareImport } from '../数据/流程';
 import PanelLookSettings from '../共用/PanelLookSettings.vue';
 import MigrationDialog from '../共用/迁移.vue';
 import {
@@ -253,7 +254,7 @@ import {
 import CardEditor from './components/CardEditor.vue';
 import CardView from './components/CardView.vue';
 
-const CLOSE_EVENT = 'card-library-close';
+const CLOSE_EVENT = PANEL_CLOSE_EVENTS.卡牌库;
 
 const errorMessage = ref('');
 const cards = ref<Card[]>([]);
@@ -523,82 +524,24 @@ function requestClose() {
 }
 
 // ---- 导出 / 导入 ----
+//
+// 实现都在 数据/流程.ts 里 (与卡组面板、数据面板共用同一套弹窗与写入规则).
+// 导出文件只带卡牌本身, 不带它们原本放在哪 —— 拿到文件的人自己选放哪.
+// 这里只导卡牌: 卡组请到卡组面板导出.
 
-const importInput = ref<HTMLInputElement | null>(null);
-
+/** 导出全部卡牌 */
 function handleExport() {
-  try {
-    const json = exportLibraryToJson();
-    const doc = viewportWindow.document;
-    const blob = new Blob([json], { type: 'application/json;charset=utf-8' });
-    const url = URL.createObjectURL(blob);
-    const anchor = doc.createElement('a');
-    anchor.href = url;
-    const stamp = new Date().toISOString().replace(/[:.]/g, '-');
-    anchor.download = `卡牌库导出-${stamp}.json`;
-    doc.body.appendChild(anchor);
-    anchor.click();
-    anchor.remove();
-    setTimeout(() => URL.revokeObjectURL(url), 1000);
-    toastr.success(`已导出 ${cards.value.length} 张卡牌`, '卡牌库');
-  } catch (error) {
-    toastr.error(error instanceof Error ? error.message : String(error), '导出失败');
-  }
+  void runShareExport({ 标题: '卡牌库', 卡组: [] });
 }
 
-function pickImportFile() {
-  importInput.value?.click();
+/** 只导出批量选择里勾上的卡牌 */
+function exportChecked() {
+  void runShareExport({ 标题: '卡牌库', 卡牌: [...checkedIds.value], 卡组: [] });
 }
 
-async function handleImportFile(event: Event) {
-  const input = event.target as HTMLInputElement;
-  const file = input.files?.[0];
-  input.value = '';
-  if (!file) {
-    return;
-  }
-
-  let text: string;
-  try {
-    text = await file.text();
-  } catch (error) {
-    toastr.error(error instanceof Error ? error.message : String(error), '读取文件失败');
-    return;
-  }
-
-  let preview: Card[];
-  try {
-    preview = parseLibraryExport(text);
-  } catch (error) {
-    toastr.error(error instanceof Error ? error.message : String(error), '导入失败');
-    return;
-  }
-
-  if (
-    !(await confirmDialog({
-      标题: '导入卡牌库',
-      内容: `即将导入 ${preview.length} 张卡牌, 同名卡牌会被覆盖, 其余新增。是否继续?`,
-      确认文案: '导入',
-    }))
-  ) {
-    return;
-  }
-
-  try {
-    const result = importLibraryFromText(text);
-    refreshCards();
-    // 若当前选中卡被覆盖/替换, 同步草稿
-    if (selectedId.value) {
-      const card = cards.value.find(c => c.id === selectedId.value);
-      draft.value = card ? reactive(_.cloneDeep(card)) : null;
-      if (!card) {
-        selectedId.value = null;
-      }
-    }
-    toastr.success(`导入完成: 新增 ${result.imported} 张, 更新 ${result.updated} 张`, '卡牌库');
-  } catch (error) {
-    toastr.error(error instanceof Error ? error.message : String(error), '导入失败');
-  }
+/** 导入卡牌 (也认旧版「卡牌库导出」文件; 文件里有卡组时一并写入) */
+async function handleImport(): Promise<void> {
+  await runShareImport('卡牌库');
 }
 
 // ---- 载入 ----
@@ -1000,10 +943,6 @@ window.addEventListener('beforeunload', commitAndSave);
   display: flex;
   gap: 8px;
   justify-content: flex-end;
-}
-
-.clp-file-input {
-  display: none;
 }
 
 .clp-banner {

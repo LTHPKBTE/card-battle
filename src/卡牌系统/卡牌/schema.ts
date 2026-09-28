@@ -171,16 +171,3 @@ export const CardLibraryVariableSchema = z.object({
   [CARD_LIBRARY_KEY]: CardLibrarySchema.prefault({ 版本: CARD_LIBRARY_VERSION, 卡牌: {} }),
 });
 
-/**
- * 卡牌库导出文件结构 (版本化, 与存储格式共用同一套迁移流程).
- * 卡牌以数组形式存放, 导入时按 id 转为存储用的 record 结构.
- */
-export const CardExportSchema = z
-  .object({
-    格式: z.string().prefault(CARD_EXPORT_FORMAT),
-    版本: z.coerce.number().prefault(CARD_LIBRARY_VERSION),
-    导出时间: z.string().prefault(''),
-    卡牌: z.array(CardSchema).prefault([]),
-  })
-  .prefault({ 格式: CARD_EXPORT_FORMAT, 版本: CARD_LIBRARY_VERSION, 导出时间: '', 卡牌: [] });
-export type CardExport = z.output<typeof CardExportSchema>;

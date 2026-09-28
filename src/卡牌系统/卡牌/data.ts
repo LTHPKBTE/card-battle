@@ -2,7 +2,7 @@
 // - 读取时把三层合并 (小范围覆盖大范围), 面板看到的是「这一份数据里可用的全部卡牌」
 // - 写入时写回卡牌「住」的那一层 (新建的卡牌写进位置偏好里选的那一层)
 // - 层级的读写细节在 ../共用/层级.ts
-import { literalYamlify, parseString, uuidv4 } from '../共用/平台';
+import { literalYamlify, uuidv4 } from '../共用/平台';
 import {
   DATA_LAYERS,
   availableLayers,
@@ -15,15 +15,12 @@ import {
   type Layered,
 } from '../共用/层级';
 import {
-  CARD_EXPORT_FORMAT,
   CARD_LIBRARY_KEY,
   CARD_LIBRARY_VERSION,
-  CardExportSchema,
   CardLibrarySchema,
   CardSchema,
   parseLegacyStars,
   type Card,
-  type CardExport,
   type CardFaction,
   type CardInput,
   type CardLibrary,
@@ -251,88 +248,49 @@ export function migrateCards(
 
 // ---- 导出 / 导入 ----
 
-/** 导出当前卡牌库为版本化 JSON 字符串 (供下载保存) */
-export function exportLibraryToJson(): string {
-  const export_data: CardExport = CardExportSchema.parse({
-    格式: CARD_EXPORT_FORMAT,
-    版本: CARD_LIBRARY_VERSION,
-    导出时间: new Date().toISOString(),
-    卡牌: loadCards(),
-  });
-  return JSON.stringify(export_data, null, 2);
-}
-
-/** 导入结果统计 */
-export interface ImportResult {
-  /** 新增的卡牌数 */
-  imported: number;
-  /** 被覆盖 (同名 id) 的卡牌数 */
-  updated: number;
-  /** 文件中的卡牌总数 */
-  total: number;
-}
-
 /**
- * 解析并校验导出文本, 返回迁移到当前版本后的卡牌数组 (不写入).
- * 供导入前预览/确认数量使用.
- */
-export function parseLibraryExport(text: string): Card[] {
-  const raw = parseString(text);
-  if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) {
-    throw new Error('导入内容必须是 YAML/JSON 对象 (键值对), 不支持标量或数组');
-  }
-  if (raw['格式'] !== CARD_EXPORT_FORMAT) {
-    throw new Error(`不是有效的卡牌库导出文件: 缺少「格式: ${CARD_EXPORT_FORMAT}」标记`);
-  }
-
-  const version = Number(raw['版本']) || 1;
-  const raw_cards: unknown[] = Array.isArray(raw['卡牌']) ? raw['卡牌'] : _.values(raw['卡牌'] ?? {});
-
-  // 先按版本迁移原始数据 (旧版 stars 是自由文本), 再逐张校验
-  const raw_record = Object.fromEntries(raw_cards.map((item, index) => [String(index), item]));
-  const migrated_library = migrateRaw({ 版本: version, 卡牌: raw_record });
-  const migrated_cards = _.values(_.isPlainObject(migrated_library.卡牌) ? migrated_library.卡牌 : {});
-
-  // 先全部校验通过, 再构建 record (任何一张不合法都直接抛错, 不写入)
-  const keyed: Record<string, Card> = {};
-  const errors: string[] = [];
-  migrated_cards.forEach((item, index) => {
-    try {
-      const parsed = CardSchema.parse(item);
-      keyed[parsed.id] = parsed;
-    } catch (error) {
-      const name = (item && typeof item === 'object' && 'name' in item && item.name) || `第 ${index + 1} 张`;
-      errors.push(`「${String(name)}」: ${error instanceof Error ? error.message : String(error)}`);
-    }
-  });
-  if (errors.length) {
-    throw new Error(`导入失败, 以下卡牌格式不合法:\n${errors.join('\n')}`);
-  }
-
-  return _.values(keyed);
-}
-
-/**
- * 从导出的 JSON/YAML/JSON5 文本导入卡牌库.
+ * 取某些卡牌 (不传就取全部) 的完整信息; 传空数组表示一张都不要.
  *
- * 流程: 解析文本 → 校验「格式」标记 → 按 id 转为 record → 迁移到当前版本 →
- * 逐张通过 schema 校验 → 与现有卡牌库按 id 合并 (覆盖同名 id, 保留其余).
- * 任何一张卡牌校验失败都不会写入 (整体回滚).
+ * 供「只导出选中的卡牌」以及「导出卡组时把用到的卡牌一并带上」使用 ——
+ * 别人的卡牌库里没有这些 id 时, 卡组会出现一堆「已不在卡牌库」.
+ * 顺序按卡牌库的插入顺序 (也就是面板看到的顺序), 导出文件读起来才顺.
  */
-export function importLibraryFromText(text: string): ImportResult {
-  const cards = parseLibraryExport(text);
-  const existing_ids = new Set(loadCards().map(card => card.id));
-  let imported = 0;
-  let updated = 0;
-  for (const card of cards) {
-    if (existing_ids.has(card.id)) {
-      updated += 1;
-    } else {
-      imported += 1;
-    }
-    saveCard(card);
+export function exportCards(card_ids?: readonly string[]): Card[] {
+  const cards = loadCards();
+  if (card_ids === undefined) {
+    return cards;
   }
-  return { imported, updated, total: cards.length };
+  const wanted = new Set(card_ids);
+  return cards.filter(card => wanted.has(card.id));
+}
+
+/** 批量写入的统计 */
+export interface WriteCardsResult {
+  /** 新增的卡牌数 */
+  新增: number;
+  /** 覆盖 (同 id 已存在) 的卡牌数 */
+  覆盖: number;
+}
+
+/** 把一批卡牌写入某一层 (同 id 覆盖, 其余新增); 合并导入与备份恢复都用它 */
+export function writeCards(cards: readonly Card[], layer: DataLayer): WriteCardsResult {
+  const existing = loadLayerLibrary(layer).卡牌;
+  let 新增 = 0;
+  let 覆盖 = 0;
+  for (const card of cards) {
+    if (_.has(existing, card.id)) {
+      覆盖 += 1;
+    } else {
+      新增 += 1;
+    }
+    writeCardToLayer(card, layer);
+  }
+  return { 新增, 覆盖 };
+}
+
+/** 清空某一层的卡牌库 (只删本脚本自己的命名空间, 不动这一层的其他数据) */
+export function clearCardLayer(layer: DataLayer): void {
+  deleteLayerKey(layer, CARD_LIBRARY_KEY);
 }
 
 /** 能在哪些位置放卡牌 (供面板的位置选择器列出) */

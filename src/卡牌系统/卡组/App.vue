@@ -9,6 +9,8 @@
           <span v-if="ready" class="dk-count">{{ decks.length }} 组</span>
           <span v-if="deployedName" class="dk-deployed">出战: {{ deployedName }}</span>
         </div>
+        <button class="dk-btn" type="button" :disabled="!ready" @click="handleExport">导出…</button>
+        <button class="dk-btn" type="button" :disabled="!ready" @click="handleImport">导入…</button>
         <button class="dk-btn" type="button" :disabled="!ready" @click="openAiDeck">AI 生成卡组</button>
         <button class="dk-btn" type="button" :class="{ primary: showLook }" @click="showLook = !showLook">
           外观
@@ -80,6 +82,15 @@
               @click="openMigrate"
             >
               迁移…
+            </button>
+            <button
+              class="dk-btn slim"
+              type="button"
+              :disabled="checkedDeckIds.length === 0"
+              title="把选中的卡组导出成文件 (默认连用到的卡牌一起带)"
+              @click="exportCheckedDecks"
+            >
+              导出…
             </button>
             <button
               class="dk-btn slim danger"
@@ -357,6 +368,8 @@ import NumberField from '../共用/NumberField.vue';
 import PanelLookSettings from '../共用/PanelLookSettings.vue';
 import MigrationDialog from '../共用/迁移.vue';
 import { confirmDialog, openDialog } from '../共用/弹窗';
+import { PANEL_CLOSE_EVENTS } from '../共用/面板';
+import { runShareExport, runShareImport } from '../数据/流程';
 import {
   flushPanelLookSave,
   loadPanelLook,
@@ -401,7 +414,7 @@ import {
 } from './data';
 import { DECK_FACTIONS, type Deck, type DeckFaction, type DeployedDeck } from './schema';
 
-const CLOSE_EVENT = 'card-deck-close';
+const CLOSE_EVENT = PANEL_CLOSE_EVENTS.卡组;
 
 // ---- 垫底外观 (与卡牌库/战斗共享同一份设置) ----
 const showLook = ref(false);
@@ -787,6 +800,26 @@ try {
 function requestClose() {
   flushDeckSave();
   window.dispatchEvent(new CustomEvent(CLOSE_EVENT));
+}
+
+// ---- 导出 / 导入 ----
+//
+// 实现都在 数据/流程.ts 里 (与卡牌库面板、数据面板共用同一套弹窗与写入规则).
+// 导出文件只带卡组本身, 不带它们原本放在哪 —— 拿到文件的人自己选放哪.
+
+/** 导出全部卡组 (对话框里可以选「一并带上卡组用到的卡牌」) */
+function handleExport() {
+  void runShareExport({ 标题: '卡组', 卡牌: [], 默认带卡: true });
+}
+
+/** 只导出批量选择里勾上的卡组 */
+function exportCheckedDecks() {
+  void runShareExport({ 标题: '卡组', 卡牌: [], 卡组: [...checkedDeckIds.value], 默认带卡: true });
+}
+
+/** 导入卡组 (文件里有卡牌时一并写入) */
+async function handleImport(): Promise<void> {
+  await runShareImport('卡组');
 }
 
 // ---- 卡组编辑 ----
