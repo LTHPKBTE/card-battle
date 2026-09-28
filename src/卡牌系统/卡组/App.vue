@@ -53,18 +53,62 @@
               {{ faction }} ({{ factionCount(faction) }})
             </button>
           </div>
+          <div class="dk-deck-tools">
+            <button class="dk-btn slim" type="button" @click="toggleSelectMode">
+              {{ selectMode ? '完成' : '批量选择' }}
+            </button>
+            <select
+              v-if="layerOptions.length > 1"
+              v-model="newLayer"
+              class="dk-input slim"
+              title="新建的卡组放在哪: 放的位置范围越小, 能用到它的地方越少"
+              aria-label="新建位置"
+            >
+              <option v-for="layer in layerOptions" :key="layer" :value="layer">新建到: {{ layer }}</option>
+            </select>
+          </div>
+          <div v-if="selectMode" class="dk-bulk">
+            <button class="dk-btn slim" type="button" @click="toggleAllDecks">
+              {{ allDecksChecked ? '取消全选' : '全选' }}
+            </button>
+            <span class="dk-bulk-count">已选 {{ checkedDeckIds.length }} 套</span>
+            <button
+              class="dk-btn slim"
+              type="button"
+              :disabled="checkedDeckIds.length === 0 || layerOptions.length < 2"
+              title="把选中的卡组搬到别的位置 (聊天 / 角色卡 / 全局)"
+              @click="openMigrate"
+            >
+              迁移…
+            </button>
+            <button
+              class="dk-btn slim danger"
+              type="button"
+              :disabled="checkedDeckIds.length === 0"
+              @click="deleteCheckedDecks"
+            >
+              删除
+            </button>
+          </div>
           <div class="dk-deck-items">
             <button
               v-for="deck in visibleDecks"
               :key="deck.id"
               class="dk-deck-item"
-              :class="{ selected: deck.id === activeDeckId }"
+              :class="{ selected: deck.id === activeDeckId, checked: selectMode && isDeckChecked(deck.id) }"
               type="button"
-              @click="selectDeck(deck.id)"
+              @click="onDeckItemClick(deck.id)"
             >
-              <span class="dk-deck-name">{{ deck.名称?.trim() || '未命名卡组' }}</span>
+              <span class="dk-deck-name">
+                <span v-if="selectMode" class="dk-check" :class="{ on: isDeckChecked(deck.id) }" aria-hidden="true"></span>
+                {{ deck.名称?.trim() || '未命名卡组' }}
+              </span>
               <span class="dk-deck-meta">
                 {{ deck.卡牌.length }} 张<span v-if="deck.id === deployedDeckId"> · 出战中</span>
+                <span v-if="deckLayerName(deck.id)" class="dk-deck-layer">{{ deckLayerName(deck.id) }}</span>
+              </span>
+              <span v-if="deckWarnCount(deck)" class="dk-deck-warn" :title="deckWarnTitle(deck)">
+                不完整
               </span>
             </button>
             <div v-if="visibleDecks.length === 0" class="dk-empty">
@@ -135,6 +179,12 @@
               </select>
             </div>
 
+            <!-- 卡组级提醒: 比卡牌库里逐张标红弱一些 —— 卡组照常能用, 只是有几张要留意 -->
+            <p v-if="activeDeckSummary.total" class="dk-warn-line">
+              本卡组{{ activeDeckSummary.text }}; 数据不完整的卡照常上场 (能读的数值照用),
+              已不在卡牌库的会被跳过。
+            </p>
+
             <div class="dk-detail-cards">
               <div
                 v-for="row in deckRows"
@@ -171,6 +221,20 @@
               <button class="dk-btn" type="button" @click="copyActiveDeck">
                 复制到{{ activeDeck.阵营 === '我方' ? '敌方' : '我方' }}
               </button>
+            </div>
+
+            <!-- 默认出战卡组: 只写一个「指针」, 当前对话自己选过的依旧优先 -->
+            <div v-if="defaultLayerOptions.length" class="dk-default-row">
+              <span class="dk-default-label" :title="defaultTitle">默认出战</span>
+              <select v-model="defaultTarget" class="dk-input slim" aria-label="默认出战的位置">
+                <option v-for="layer in defaultLayerOptions" :key="layer" :value="layer">{{ layer }}默认</option>
+              </select>
+              <button class="dk-btn slim" type="button" @click="toggleDefault">
+                {{ isDefaultHere ? '取消默认' : '设为默认' }}
+              </button>
+              <span v-if="deployedFromLayer" class="dk-default-from">
+                当前出战卡组来自: {{ deployedFromLayer }}
+              </span>
             </div>
           </template>
           <div v-else class="dk-empty">选择或新建一个卡组</div>
@@ -263,12 +327,23 @@
           </div>
         </div>
       </div>
+
+      <!-- 批量迁移: 选目标位置 + 移动/复制 (两个面板共用同一个弹窗) -->
+      <MigrationDialog
+        v-if="migrateOpen"
+        :标题="`迁移 ${checkedDeckIds.length} 套卡组`"
+        :说明="migrateHint"
+        :来源="migrateSources"
+        :缺卡估算="migrateMissingCount"
+        @关闭="migrateOpen = false"
+        @确认="applyMigrate"
+      />
     </div>
   </div>
 </template>
 
 <script setup lang="ts">
-import { computed, onBeforeUnmount, ref } from 'vue';
+import { computed, onBeforeUnmount, ref, watch } from 'vue';
 import { aiStopAll } from '../AI/客户端';
 import { 生成卡组 } from '../AI/任务';
 import AiContextField from '../AI/components/AiContextField.vue';
@@ -280,6 +355,7 @@ import { cardIssueMap } from '../卡牌/校验';
 import { RARITIES, type Card, type CardFaction, type CardInput } from '../卡牌/schema';
 import NumberField from '../共用/NumberField.vue';
 import PanelLookSettings from '../共用/PanelLookSettings.vue';
+import MigrationDialog from '../共用/迁移.vue';
 import { confirmDialog, openDialog } from '../共用/弹窗';
 import {
   flushPanelLookSave,
@@ -289,20 +365,39 @@ import {
   type PanelLook,
 } from '../共用/外观';
 import {
+  LAYER_HINTS,
+  availableLayers,
+  flushLayerSettings,
+  onLayerSettingsChanged,
+  preferredLayer,
+  saveLayerSettings,
+  type DataLayer,
+} from '../共用/层级';
+import {
   addCardToDeck,
   clearDeployedDeck,
   createDeck,
+  deckLayer,
   deleteDeck,
   deployDeck,
+  describeDeckIssues,
+  deckIssues,
   groupDeckCards,
-  loadDeckStore,
   loadDecks,
   loadDeployedDeck,
+  loadDeployedDeckId,
+  loadDeployedDeckPointer,
+  loadLayerDeployedDeckId,
+  migrateDecks,
+  missingCardsForDecks,
   resolveDeck,
   saveDeck,
   setCardCount,
+  setDefaultDeployedDeck,
+  setDeployedDeckId,
   复制卡组,
   type DeckCardRow,
+  type DeckIssues,
 } from './data';
 import { DECK_FACTIONS, type Deck, type DeckFaction, type DeployedDeck } from './schema';
 
@@ -326,6 +421,215 @@ const keyword = ref('');
 const rarityFilter = ref('');
 const factionFilter = ref<DeckFaction>('我方');
 
+// ---- 数据位置 (聊天 / 角色卡 / 全局) ----
+
+/** 能放卡组的位置 (没有对话时聊天层不可用, 列表会短一些) */
+const layerOptions = availableLayers();
+/** 新建的卡组放哪一层 (存脚本变量, 换聊天也不会丢) */
+const newLayer = ref<DataLayer>(preferredLayer());
+const off_layer = onLayerSettingsChanged(() => {
+  newLayer.value = preferredLayer();
+});
+watch(newLayer, value => {
+  saveLayerSettings({ 新建位置: value });
+});
+
+/** 能当「默认出战」的位置 (当前对话是各聊各的, 不当默认) */
+const defaultLayerOptions = computed(() => layerOptions.filter(layer => layer !== '聊天'));
+/** 正在设置哪一层的默认出战卡组 */
+const defaultTarget = ref<DataLayer>(
+  defaultLayerOptions.value[defaultLayerOptions.value.length - 1] ?? '角色卡',
+);
+const defaultTitle = computed(
+  () =>
+    `给「${defaultTarget.value}」定一套默认出战卡组: ${LAYER_HINTS[defaultTarget.value]}。\n` +
+    '当前对话自己选过的卡组依旧优先。',
+);
+/** 各层自己存的默认出战卡组 (仅用于界面显示) */
+const layerDefaults = ref<Partial<Record<DataLayer, string>>>({});
+/** 当前出战卡组的选择是哪儿来的 */
+const deployedFrom = ref<DataLayer | ''>('');
+
+/** 这张卡组住在哪一层; 聊天层的不标 */
+function deckLayerName(deck_id: string): string {
+  const layer = deckLayer(deck_id);
+  return layer && layer !== '聊天' ? layer : '';
+}
+
+/** 当前选中的卡组是不是「里面那一层」的默认出战卡组 */
+const isDefaultHere = computed(() => {
+  const deck = activeDeck.value;
+  return Boolean(deck) && layerDefaults.value[defaultTarget.value] === deck?.id;
+});
+
+/** 当前出战卡组的选择来自哪一层 (聊天 = 这个对话自己选的) */
+const deployedFromLayer = computed(() => {
+  const layer = deployedFrom.value;
+  if (!layer) {
+    return '';
+  }
+  return layer === '聊天' ? '当前对话' : `${layer}默认`;
+});
+
+// ---- 卡组多选 (批量迁移 / 批量删除) ----
+
+const selectMode = ref(false);
+const checkedDeckIds = ref<string[]>([]);
+const allDecksChecked = computed(
+  () =>
+    visibleDecks.value.length > 0 &&
+    visibleDecks.value.every(deck => checkedDeckIds.value.includes(deck.id)),
+);
+
+function isDeckChecked(deck_id: string): boolean {
+  return checkedDeckIds.value.includes(deck_id);
+}
+
+function toggleDeckChecked(deck_id: string) {
+  const index = checkedDeckIds.value.indexOf(deck_id);
+  if (index >= 0) {
+    checkedDeckIds.value.splice(index, 1);
+  } else {
+    checkedDeckIds.value.push(deck_id);
+  }
+}
+
+function onDeckItemClick(deck_id: string) {
+  if (selectMode.value) {
+    toggleDeckChecked(deck_id);
+    return;
+  }
+  selectDeck(deck_id);
+}
+
+function toggleSelectMode() {
+  selectMode.value = !selectMode.value;
+  if (!selectMode.value) {
+    checkedDeckIds.value = [];
+  }
+}
+
+function toggleAllDecks() {
+  checkedDeckIds.value = allDecksChecked.value ? [] : visibleDecks.value.map(deck => deck.id);
+}
+
+/** 批量删除选中的卡组 */
+async function deleteCheckedDecks() {
+  const ids = [...checkedDeckIds.value];
+  if (ids.length === 0) {
+    return;
+  }
+  const names = ids.map(id => decks.value.find(deck => deck.id === id)?.名称?.trim() || '未命名卡组');
+  const preview = names.slice(0, 8).map(name => `· ${name}`).join('\n');
+  const more = names.length > 8 ? `\n· …共 ${names.length} 套` : '';
+  const ok = await confirmDialog({
+    标题: '删除卡组',
+    内容: `确定删除选中的 ${ids.length} 套卡组?\n${preview}${more}\n该操作不可撤销。`,
+    确认文案: '删除',
+    危险: true,
+  });
+  if (!ok) {
+    return;
+  }
+  scheduleDeckSave.cancel();
+  try {
+    for (const id of ids) {
+      deleteDeck(id);
+    }
+  } catch (error) {
+    toastr.error(error instanceof Error ? error.message : String(error), '删除失败');
+    return;
+  }
+  checkedDeckIds.value = [];
+  activeDeckId.value = null;
+  refresh();
+  toastr.success(`已删除 ${ids.length} 套卡组`, '卡组');
+}
+
+// ---- 批量迁移 ----
+
+const migrateOpen = ref(false);
+
+/** 选中的卡组各自现在在哪一层 */
+const migrateSources = computed<DataLayer[]>(() => {
+  const layers = checkedDeckIds.value
+    .map(id => deckLayer(id))
+    .filter((layer): layer is DataLayer => layer !== null);
+  return [...new Set(layers)];
+});
+
+const migrateHint = computed(() => {
+  const parts = migrateSources.value.map(layer => `${layer} 的卡组 (${LAYER_HINTS[layer]})`);
+  return parts.length ? `选中的卡组现在是: ${parts.join('、')}。` : '';
+});
+
+/** 某个目标位置用不上的卡牌有多少种 (同一张卡只算一次) */
+function migrateMissingCount(layer: DataLayer): number {
+  return missingCardsForDecks(checkedDeckIds.value, layer).length;
+}
+
+function openMigrate() {
+  if (checkedDeckIds.value.length === 0) {
+    toastr.warning('先勾选要迁移的卡组', '迁移卡组');
+    return;
+  }
+  // 编辑中的草稿先落盘, 否则迁移完可能又被写回旧位置
+  flushDeckSave();
+  migrateOpen.value = true;
+}
+
+function applyMigrate(choice: { 目标: DataLayer; 方式: 'move' | 'copy'; 一并迁移卡牌: boolean }) {
+  migrateOpen.value = false;
+  const ids = [...checkedDeckIds.value];
+  let result: ReturnType<typeof migrateDecks>;
+  try {
+    result = migrateDecks(ids, choice.目标, choice.方式, { 一并迁移卡牌: choice.一并迁移卡牌 });
+  } catch (error) {
+    toastr.error(error instanceof Error ? error.message : String(error), '迁移失败');
+    return;
+  }
+  checkedDeckIds.value = [];
+  refresh();
+  if (result.写入.length === 0) {
+    toastr.info(`选中的卡组本来就在「${choice.目标}」, 没有需要搬的`, '迁移卡组');
+    return;
+  }
+  const 带卡 = result.卡牌 ? `, 并带上了 ${result.卡牌} 张卡牌` : '';
+  if (choice.方式 === 'move') {
+    toastr.success(`已把 ${result.写入.length} 套卡组移到「${choice.目标}」${带卡}`, '迁移卡组');
+  } else {
+    toastr.success(
+      `已在「${choice.目标}」复制出 ${result.写入.length} 套卡组${带卡} (副本是独立的, 之后改动互不影响)`,
+      '迁移卡组',
+    );
+  }
+}
+
+/** 把当前卡组设为（或取消）某一层的默认出战卡组 */
+function toggleDefault() {
+  const deck = activeDeck.value;
+  if (!deck) return;
+  const layer = defaultTarget.value;
+  try {
+    if (layerDefaults.value[layer] === deck.id) {
+      setDeployedDeckId('', layer);
+      refresh();
+      toastr.info(`已取消「${layer}」的默认出战卡组`, '出战卡组');
+      return;
+    }
+    setDefaultDeployedDeck(deck.id, layer);
+    const missing = missingCardsForDecks([deck.id], layer).length;
+    refresh();
+    const note = missing ? `; 这套卡组里有 ${missing} 种卡在「${layer}」看不到, 在别处用可能会缺卡` : '';
+    toastr.success(
+      `已把「${deck.名称?.trim() || '未命名卡组'}」设为「${layer}」的默认出战卡组${note}`,
+      '出战卡组',
+    );
+  } catch (error) {
+    toastr.error(error instanceof Error ? error.message : String(error), '设置失败');
+  }
+}
+
 const ready = computed(() => errorMessage.value === '');
 const activeDeck = computed(() => decks.value.find(deck => deck.id === activeDeckId.value));
 const deckRows = computed<DeckCardRow[]>(() => (activeDeck.value ? groupDeckCards(activeDeck.value) : []));
@@ -348,6 +652,32 @@ function issueList(card_id: string): string[] {
 function issueTitle(card_id: string): string {
   return issueList(card_id).join('；');
 }
+
+/** 一个卡组里的毛病统计 (判定与卡牌库的逐张提醒共用 `deckIssues`) */
+function deckIssueCounts(deck: Deck): DeckIssues {
+  return deckIssues(deck, cards.value);
+}
+
+/** 列表小标记的悬停说明 */
+function deckWarnTitle(deck: Deck): string {
+  return `${describeDeckIssues(deckIssueCounts(deck))} (仍可出战)`;
+}
+
+/** 列表小标记出现的门槛 (有问题就标) */
+function deckWarnCount(deck: Deck): number {
+  const { 不完整, 缺失 } = deckIssueCounts(deck);
+  return 不完整 + 缺失;
+}
+
+/** 当前卡组的汇总文案 (没问题的卡组返回空文本与 0) */
+const activeDeckSummary = computed(() => {
+  const deck = activeDeck.value;
+  if (!deck) {
+    return { total: 0, text: '' };
+  }
+  const issues = deckIssueCounts(deck);
+  return { total: issues.不完整 + issues.缺失, text: describeDeckIssues(issues) };
+});
 
 /** 当前卡组可用的卡牌: 通用卡 + 该阵营专属卡 */
 const poolCards = computed(() => {
@@ -422,10 +752,20 @@ function refresh() {
   decks.value = loadDecks();
   cards.value = loadCards();
   deployed.value = loadDeployedDeck();
-  deployedDeckId.value = loadDeckStore().出战卡组;
+  deployedDeckId.value = loadDeployedDeckId();
+  deployedFrom.value = loadDeployedDeckPointer()?.layer ?? '';
+  const defaults: Partial<Record<DataLayer, string>> = {};
+  for (const layer of layerOptions) {
+    const deck_id = loadLayerDeployedDeckId(layer);
+    if (deck_id) {
+      defaults[layer] = deck_id;
+    }
+  }
+  layerDefaults.value = defaults;
   if (activeDeckId.value && !decks.value.some(deck => deck.id === activeDeckId.value)) {
     activeDeckId.value = null;
   }
+  checkedDeckIds.value = checkedDeckIds.value.filter(id => decks.value.some(deck => deck.id === id));
 }
 
 function retryLoad() {
@@ -818,7 +1158,9 @@ onBeforeUnmount(() => {
   scheduleDeckSave.cancel();
   narrowMq?.removeEventListener('change', syncNarrow as EventListener);
   off_look();
+  off_layer();
   flushPanelLookSave();
+  flushLayerSettings();
 });
 </script>
 
@@ -1111,8 +1453,11 @@ onBeforeUnmount(() => {
 }
 
 .dk-deck-name {
-  font-weight: 600;
+  display: flex;
+  align-items: center;
+  gap: 6px;
   max-width: 100%;
+  font-weight: 600;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -1121,6 +1466,121 @@ onBeforeUnmount(() => {
 .dk-deck-meta {
   font-size: 0.78em;
   color: var(--dk-text-secondary);
+}
+
+/* 卡组列表上的「不完整」小标记: 比卡牌库里逐张标红弱一些 */
+.dk-deck-warn {
+  align-self: flex-start;
+  font-size: 0.72em;
+  color: rgb(255 255 255 / 0.42);
+  border: 1px dashed rgb(255 255 255 / 0.22);
+  border-radius: 4px;
+  padding: 0 4px;
+}
+
+/* 卡组详情里的汇总一行 (照样能出战, 只是提一句) */
+.dk-warn-line {
+  margin: 0;
+  font-size: 0.8em;
+  line-height: 1.5;
+  color: rgb(255 255 255 / 0.45);
+}
+
+/* 左侧列表上方的小工具条: 批量选择 + 新建位置 */
+.dk-deck-tools {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+/* 批量选择时才出现的操作条 */
+.dk-bulk {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 7px;
+  border: 1px solid rgb(137 180 250 / 0.35);
+  border-radius: 8px;
+  background: rgb(137 180 250 / 0.08);
+}
+
+.dk-bulk-count {
+  flex: 1;
+  font-size: 0.78em;
+  color: var(--dk-text-secondary);
+}
+
+.dk-deck-item.checked {
+  background: rgb(137 180 250 / 0.16);
+  border-color: rgb(137 180 250 / 0.45);
+}
+
+/* 多选勾选框 */
+.dk-check {
+  flex: none;
+  width: 12px;
+  height: 12px;
+  border: 1px solid rgb(255 255 255 / 0.35);
+  border-radius: 4px;
+  background: rgb(0 0 0 / 0.3);
+  position: relative;
+}
+
+.dk-check.on {
+  border-color: var(--dk-accent);
+  background: var(--dk-accent);
+}
+
+.dk-check.on::after {
+  content: '';
+  position: absolute;
+  left: 3px;
+  top: -1px;
+  width: 4px;
+  height: 8px;
+  border: solid #07111f;
+  border-width: 0 2px 2px 0;
+  transform: rotate(45deg);
+}
+
+/* 位置标记: 这套卡组在聊天之外的地方也能用 (角色卡 / 全局) */
+.dk-deck-layer {
+  margin-left: 4px;
+  font-size: 0.92em;
+  color: rgb(166 227 161 / 0.75);
+  border: 1px solid rgb(166 227 161 / 0.3);
+  border-radius: 4px;
+  padding: 0 4px;
+}
+
+/* 默认出战卡组那一行 */
+.dk-default-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  font-size: 0.82em;
+  color: var(--dk-text-secondary);
+}
+
+.dk-default-label {
+  flex: none;
+}
+
+.dk-default-from {
+  flex: none;
+  color: rgb(166 227 161 / 0.75);
+}
+
+.dk-btn.slim {
+  padding: 4px 9px;
+}
+
+.dk-input.slim {
+  width: auto;
+  flex: none;
+  padding: 4px 6px;
+  font-size: 0.82em;
 }
 
 .dk-new {
@@ -1377,8 +1837,13 @@ onBeforeUnmount(() => {
   cursor: pointer;
 }
 
-.dk-btn:hover {
+.dk-btn:hover:not(:disabled) {
   background: rgb(255 255 255 / 0.14);
+}
+
+.dk-btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
 }
 
 .dk-btn.danger {

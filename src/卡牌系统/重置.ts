@@ -11,11 +11,12 @@
 //
 // 这一层接触酒馆全局, 所以不做 node 测试 (弹窗逻辑在 共用/弹窗.ts, 是纯 DOM).
 
-import { hasCharacter, loadLibrary } from './卡牌/data';
+import { hasCharacter, loadLayerLibrary } from './卡牌/data';
 import { CARD_LIBRARY_KEY } from './卡牌/schema';
-import { hasChat, loadDecks } from './卡组/data';
+import { hasChat, loadLayerDeckStore } from './卡组/data';
 import { BATTLE_CHAT_KEY, DECK_CHAT_KEY } from './卡组/schema';
 import { delayedConfirmDialog } from './共用/弹窗';
+import { readLayer } from './共用/层级';
 import { endBattleSession, isBattleRunning, resetBattleCache } from './战斗/同步';
 
 /** 清空时会一并移除的聊天变量命名空间 */
@@ -26,33 +27,51 @@ export const RESET_WAIT_MS = 5000;
 
 /** 即将被清空的内容 (只用于弹窗文案) */
 export interface ResetSummary {
-  /** 卡牌库里的卡牌张数 */
+  /** 角色卡层里的卡牌张数 */
   cards: number;
   /** 当前对话里的卡组数量 */
   decks: number;
   /** 是否有进行中的战斗 */
   battle: boolean;
+  /** 全局层里的卡牌张数 (不属于本次清空, 只拿来提醒) */
+  global_cards: number;
+  /** 全局层里的卡组数量 (同上) */
+  global_decks: number;
 }
 
 /** 统计将被清空的内容; 读变量失败时按空处理 (反正要删) */
 export function summarizeReset(): ResetSummary {
   let cards = 0;
   let decks = 0;
+  let global_cards: number;
+  let global_decks: number;
   try {
     if (hasCharacter()) {
-      cards = _.values(loadLibrary().卡牌).length;
+      cards = _.values(loadLayerLibrary('角色卡').卡牌).length;
     }
   } catch {
     cards = 0;
   }
   try {
     if (hasChat()) {
-      decks = loadDecks().length;
+      decks = _.values(loadLayerDeckStore('聊天').卡组).length;
     }
   } catch {
     decks = 0;
   }
-  return { cards, decks, battle: isBattleRunning() };
+  try {
+    const library = readLayer('全局', CARD_LIBRARY_KEY);
+    global_cards = _.isPlainObject(library) ? _.values((library as any).卡牌).length : 0;
+  } catch {
+    global_cards = 0;
+  }
+  try {
+    const store = readLayer('全局', DECK_CHAT_KEY);
+    global_decks = _.isPlainObject(store) ? _.values((store as any).卡组).length : 0;
+  } catch {
+    global_decks = 0;
+  }
+  return { cards, decks, battle: isBattleRunning(), global_cards, global_decks };
 }
 
 /** 组装警告弹窗的正文 */
@@ -73,6 +92,11 @@ export function resetConfirmText(summary = summarizeReset()): string {
   }
 
   lines.push('');
+  if (summary.global_cards || summary.global_decks) {
+    lines.push(
+      `全局范围的卡牌 / 卡组不属于本次清空: 现有 ${summary.global_cards} 张卡牌、${summary.global_decks} 套卡组仍然可用。`,
+    );
+  }
   lines.push('其他脚本写在角色卡变量 / 聊天变量里的数据不受影响。');
   lines.push('已打开的卡牌库 / 卡组 / 战斗面板会被关闭。');
   lines.push('确定按钮在 5 秒后才会亮起。');

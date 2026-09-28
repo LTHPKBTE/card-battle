@@ -1,9 +1,23 @@
-// 卡组数据访问层: 以 "聊天变量 (chat)" 为存储, 命名空间 `卡组`
-// - 卡组只存卡牌 id, 需要完整信息时从卡牌库 (角色卡变量) 读取
-// - 出战时把完整卡牌快照写入聊天变量 `战斗.出战卡组`
+// 卡组数据访问层: 数据可以放在三个层级 (聊天 / 角色卡 / 全局)
+// - 读取时把三层合并 (小范围覆盖大范围), 面板看到的是「这一份数据里可用的全部卡组」
+// - 「出战卡组」只能有一个, 所以按 聊天 > 角色卡 > 全局 依次回退
+// - 出战时把完整卡牌快照写入**聊天**变量 `战斗.出战卡组` (战斗总归属于当前对话)
 import { uuidv4 } from '../共用/平台';
-import { createCard, loadCard, loadCards } from '../卡牌/data';
+import {
+  DATA_LAYERS,
+  availableLayers,
+  layerAvailable,
+  layerRank,
+  mergeLayers,
+  preferredLayer,
+  readLayer,
+  writeLayer,
+  type DataLayer,
+  type Layered,
+} from '../共用/层级';
+import { cardLayer, createCard, loadCard, loadCards, migrateCards } from '../卡牌/data';
 import { cardContentKey, indexCardsByContent } from '../卡牌/去重';
+import { cardIssues } from '../卡牌/校验';
 import type { Card, CardInput } from '../卡牌/schema';
 import {
   BATTLE_CHAT_KEY,
@@ -61,32 +75,40 @@ export function hasChat(): boolean {
   }
 }
 
-/** 读取卡组存储 (缺失/无聊天时返回空存储, 并按版本迁移) */
-export function loadDeckStore(): DeckStore {
-  if (!hasChat()) {
+/** 读取某一层的卡组存储 (该层没有数据时是空存储, 并按版本迁移) */
+export function loadLayerDeckStore(layer: DataLayer): DeckStore {
+  if (!layerAvailable(layer)) {
     return DeckStoreSchema.parse({});
   }
   try {
-    return DeckStoreSchema.parse(migrateRaw(_.get(getVariables({ type: 'chat' }), DECK_CHAT_KEY)));
+    return DeckStoreSchema.parse(migrateRaw(readLayer(layer, DECK_CHAT_KEY)));
   } catch {
     return DeckStoreSchema.parse({});
   }
 }
 
-/** 写回卡组存储 */
-function saveDeckStore(store: DeckStore): void {
-  updateVariablesWith(
-    variables => {
-      _.set(variables, DECK_CHAT_KEY, DeckStoreSchema.parse(store));
-      return variables;
-    },
-    { type: 'chat' },
-  );
+/** 写回某一层的卡组存储 */
+function saveLayerDeckStore(layer: DataLayer, store: DeckStore): void {
+  writeLayer(layer, DECK_CHAT_KEY, DeckStoreSchema.parse(store));
 }
 
-/** 读取全部卡组 (按创建时间/插入顺序) */
+/** 三层各自的卡组记录 (按 id) */
+export function loadDeckLayerRecords(): Partial<Record<DataLayer, Record<string, Deck>>> {
+  const records: Partial<Record<DataLayer, Record<string, Deck>>> = {};
+  for (const layer of DATA_LAYERS) {
+    records[layer] = loadLayerDeckStore(layer).卡组;
+  }
+  return records;
+}
+
+/** 合并三层后的卡组: id → { 卡组, 来自哪一层 } */
+export function loadDeckLayers(): Map<string, Layered<Deck>> {
+  return mergeLayers(loadDeckLayerRecords());
+}
+
+/** 读取全部卡组 (三层合并, 按创建时间/插入顺序) */
 export function loadDecks(): Deck[] {
-  return _.values(loadDeckStore().卡组);
+  return [...loadDeckLayers().values()].map(hit => hit.value);
 }
 
 /** 读取指定阵营的卡组 */
@@ -96,20 +118,49 @@ export function loadDecksByFaction(faction: DeckFaction): Deck[] {
 
 /** 依据 id 读取卡组 */
 export function loadDeck(deck_id: string): Deck | undefined {
-  return loadDeckStore().卡组[deck_id];
+  return loadDeckLayers().get(deck_id)?.value;
 }
 
-/** 新增或覆盖一个卡组 */
-export function saveDeck(deck: DeckInput): Deck {
+/** 这个卡组「住」在哪一层; 不存在时返回 null */
+export function deckLayer(deck_id: string): DataLayer | null {
+  return loadDeckLayers().get(deck_id)?.layer ?? null;
+}
+
+/** 往某一层里写回单个卡组 (内部用) */
+function writeDeckToLayer(deck: Deck, layer: DataLayer): void {
+  const store = loadLayerDeckStore(layer);
+  store.卡组[deck.id] = deck;
+  saveLayerDeckStore(layer, store);
+}
+
+/** 从某一层里移除卡组 (不动其他层) */
+function deleteDeckFromLayer(deck_id: string, layer: DataLayer): boolean {
+  const store = loadLayerDeckStore(layer);
+  if (!_.has(store.卡组, deck_id)) {
+    return false;
+  }
+  delete store.卡组[deck_id];
+  if (store.出战卡组 === deck_id) {
+    store.出战卡组 = '';
+  }
+  saveLayerDeckStore(layer, store);
+  return true;
+}
+
+/**
+ * 新增或覆盖一个卡组.
+ *
+ * `layer` 省略时写回这个卡组原本所在的层 (不会把一张全局卡组偷偷搬进当前聊天);
+ * 是一个新卡组时才落到位置偏好里选的层.
+ */
+export function saveDeck(deck: DeckInput, layer?: DataLayer): Deck {
   const parsed = DeckSchema.parse(deck);
-  const store = loadDeckStore();
-  store.卡组[parsed.id] = parsed;
-  saveDeckStore(store);
+  writeDeckToLayer(parsed, layer ?? deckLayer(parsed.id) ?? preferredLayer());
   return parsed;
 }
 
 /** 新建一个空卡组并写入, 返回新卡组 */
-export function createDeck(名称 = '', 阵营: DeckFaction = '我方'): Deck {
+export function createDeck(名称 = '', 阵营: DeckFaction = '我方', layer?: DataLayer): Deck {
   const deck = DeckSchema.parse({
     id: uuidv4(),
     名称,
@@ -118,24 +169,86 @@ export function createDeck(名称 = '', 阵营: DeckFaction = '我方'): Deck {
     备注: '',
     创建时间: Date.now(),
   });
-  return saveDeck(deck);
+  return saveDeck(deck, layer ?? preferredLayer());
 }
 
-/** 删除卡组; 若它是当前出战卡组则同时清空出战记录 */
+/** 删除卡组 (从它所在的那一层删); 若它是当前出战卡组则同时清空出战记录 */
 export function deleteDeck(deck_id: string): boolean {
-  const store = loadDeckStore();
-  if (!_.has(store.卡组, deck_id)) {
+  const layer = deckLayer(deck_id);
+  if (!layer) {
     return false;
   }
-  delete store.卡组[deck_id];
-  if (store.出战卡组 === deck_id) {
-    store.出战卡组 = '';
-  }
-  saveDeckStore(store);
+  const removed = deleteDeckFromLayer(deck_id, layer);
+  // 其他地方把这个卡组设为默认的也要一并抹掉, 否则会留个指不到人的指针
+  clearDeployedDeckIdFor(deck_id);
   if (loadDeployedDeck()?.卡组id === deck_id) {
     clearDeployedDeck();
   }
-  return true;
+  return removed;
+}
+
+// ---- 出战卡组 (三层回退) ----
+
+/**
+ * 出战卡组指针.
+ *
+ * 每一层都能存一个「默认出战卡组」, 取的时候按 聊天 > 角色卡 > 全局 回退 ——
+ * 当前对话自己选过的优先, 没选过就用角色卡带的默认, 再没有就用全局默认.
+ */
+export function loadDeployedDeckPointer(): { deck_id: string; layer: DataLayer } | null {
+  // 卡组已经被删掉的指针直接忽略, 继续往下找 (免得卡在一个不存在的卡组上)
+  const decks = loadDeckLayers();
+  for (const layer of DATA_LAYERS) {
+    const deck_id = loadLayerDeckStore(layer).出战卡组;
+    if (deck_id && decks.has(deck_id)) {
+      return { deck_id, layer };
+    }
+  }
+  return null;
+}
+
+/** 当前出战卡组的 id (三层回退的结果; 没选出战卡组时是空串) */
+export function loadDeployedDeckId(): string {
+  return loadDeployedDeckPointer()?.deck_id ?? '';
+}
+
+/** 某一层自己存的出战卡组 id (不往别层回退; 空串表示这一层没选过) */
+export function loadLayerDeployedDeckId(layer: DataLayer): string {
+  return loadLayerDeckStore(layer).出战卡组;
+}
+
+/** 把出战指针写到某一层 (小范围的那层会盖住大范围的) */
+export function setDeployedDeckId(deck_id: string, layer: DataLayer): void {
+  const store = loadLayerDeckStore(layer);
+  store.出战卡组 = deck_id;
+  saveLayerDeckStore(layer, store);
+}
+
+/** 清掉出战指针 (省略 `layer` 时清掉所有层的) */
+export function clearDeployedDeckId(layer?: DataLayer): void {
+  for (const target of layer ? [layer] : DATA_LAYERS) {
+    const store = loadLayerDeckStore(target);
+    if (store.出战卡组) {
+      store.出战卡组 = '';
+      saveLayerDeckStore(target, store);
+    }
+  }
+}
+
+/** 清掉所有指间某个卡组的出战指针 (删卡组时用) */
+function clearDeployedDeckIdFor(deck_id: string): void {
+  for (const layer of DATA_LAYERS) {
+    const store = loadLayerDeckStore(layer);
+    if (store.出战卡组 === deck_id) {
+      store.出战卡组 = '';
+      saveLayerDeckStore(layer, store);
+    }
+  }
+}
+
+/** 能在哪些位置放卡组 (供面板的位置选择器列出) */
+export function deckLayers(): DataLayer[] {
+  return availableLayers();
 }
 
 /** 往卡组里加入一张卡牌 (追加一份) */
@@ -308,9 +421,57 @@ export function resolveDeck(deck: Deck): { 卡牌: Card[]; 缺失: string[] } {
   return { 卡牌, 缺失 };
 }
 
+/** 卡组里的毛病统计 (按卡组里的张数算: 同一张卡带 3 份就算 3 张) */
+export interface DeckIssues {
+  /** 卡牌还在, 但数据没填完 / 数值读不懂 (照常上场, 少用的只是机读效果与读不出的数值) */
+  不完整: number;
+  /** 卡牌已不在卡牌库 (出战 / 战斗时会被跳过) */
+  缺失: number;
+}
+
+/**
+ * 统计一个卡组里有多少张卡「数据不完整 / 已不在卡牌库」.
+ *
+ * 判定与卡牌库面板的逐张提醒完全一致 (共用 `cardIssues`), 卡组面板的汇总、卡组列表的小标记
+ * 与开战页的「（不完整）」后缀都用这一份, 免得三处判得不一样.
+ * `cards` 可传入已经读好的卡牌库 (面板里已经读过一次时别再读一遍变量).
+ */
+export function deckIssues(deck: Deck, cards?: Card[]): DeckIssues {
+  const by_id = new Map((cards ?? loadCards()).map(card => [card.id, card]));
+  let 不完整 = 0;
+  let 缺失 = 0;
+  for (const card_id of deck.卡牌) {
+    const card = by_id.get(card_id);
+    if (!card) {
+      缺失 += 1;
+    } else if (cardIssues(card).length > 0) {
+      不完整 += 1;
+    }
+  }
+  return { 不完整, 缺失 };
+}
+
+/** 这个卡组是否「能用但不完整」(有卡数据不完整, 或有卡已不在卡牌库) */
+export function isDeckIncomplete(deck: Deck, cards?: Card[]): boolean {
+  const { 不完整, 缺失 } = deckIssues(deck, cards);
+  return 不完整 + 缺失 > 0;
+}
+
+/** 毛病的一句话说明 (「2 张卡数据不完整, 1 张已不在卡牌库」); 没问题时是空串 */
+export function describeDeckIssues(issues: DeckIssues): string {
+  const parts: string[] = [];
+  if (issues.不完整) {
+    parts.push(`${issues.不完整} 张卡数据不完整`);
+  }
+  if (issues.缺失) {
+    parts.push(`${issues.缺失} 张已不在卡牌库`);
+  }
+  return parts.join(', ');
+}
+
 /**
  * 让某个卡组出战: 把完整卡牌快照写入聊天变量 `战斗.出战卡组`,
- * 并在卡组存储里记下出战卡组 id.
+ * 并把出战指针记在**当前对话**这一层 (每个对话可以各选各的, 不影响其他对话).
  */
 export function deployDeck(deck_id: string): { deployed: DeployedDeck; 缺失: string[] } {
   const deck = loadDeck(deck_id);
@@ -332,10 +493,17 @@ export function deployDeck(deck_id: string): { deployed: DeployedDeck; 缺失: s
     },
     { type: 'chat' },
   );
-  const store = loadDeckStore();
-  store.出战卡组 = deck.id;
-  saveDeckStore(store);
+  setDeployedDeckId(deck.id, '聊天');
   return { deployed, 缺失 };
+}
+
+/**
+ * 把某个卡组设为某一层的默认出战卡组 (在面板上明确选了「设为 xx 默认」时才调).
+ *
+ * 范围更小的层会盖住它 —— 当前对话自己选过的卡组依旧优先.
+ */
+export function setDefaultDeployedDeck(deck_id: string, layer: DataLayer): void {
+  setDeployedDeckId(deck_id, layer);
 }
 
 /** 读取当前出战卡组快照 (未出战时返回 undefined) */
@@ -345,16 +513,35 @@ export function loadDeployedDeck(): DeployedDeck | undefined {
   }
   try {
     const raw = _.get(getVariables({ type: 'chat' }), `${BATTLE_CHAT_KEY}.${DEPLOYED_DECK_KEY}`);
-    if (raw === undefined || raw === null) {
-      return undefined;
+    if (raw !== undefined && raw !== null) {
+      return DeployedDeckSchema.parse(raw);
     }
-    return DeployedDeckSchema.parse(raw);
+  } catch {
+    /* 快照读不出来就退回默认 */
+  }
+  // 这个对话没手动选过: 用默认 (角色卡默认 > 全局默认) 当场现组一份快照, 不往变量里写
+  const pointer = loadDeployedDeckPointer();
+  if (!pointer) {
+    return undefined;
+  }
+  const deck = loadDeck(pointer.deck_id);
+  if (!deck) {
+    return undefined;
+  }
+  try {
+    return DeployedDeckSchema.parse({
+      卡组id: deck.id,
+      名称: deck.名称,
+      备注: deck.备注,
+      卡牌: resolveDeck(deck).卡牌,
+      选择时间: new Date().toISOString(),
+    });
   } catch {
     return undefined;
   }
 }
 
-/** 取消出战 (删除聊天变量 `战斗.出战卡组`) */
+/** 取消出战 (删掉当前对话的出战快照与出战选择; 别处的默认不受影响) */
 export function clearDeployedDeck(): void {
   updateVariablesWith(
     variables => {
@@ -363,11 +550,97 @@ export function clearDeployedDeck(): void {
     },
     { type: 'chat' },
   );
-  const store = loadDeckStore();
-  if (store.出战卡组) {
-    store.出战卡组 = '';
-    saveDeckStore(store);
+  clearDeployedDeckId('聊天');
+}
+
+// ---- 迁移 ----
+
+/**
+ * 从 `layer` 这一层看过去, 这张卡能不能用.
+ *
+ * 一张卡住的地方范围不小於查看的层, 就看得见 (全局卡在哪儿都能用).
+ */
+function cardVisibleFrom(card_id: string, layer: DataLayer): boolean {
+  const home = cardLayer(card_id);
+  return home !== null && layerRank(home) >= layerRank(layer);
+}
+
+/**
+ * 这些卡组里, 换个位置之后会用不上的卡牌 id.
+ *
+ * 用于迁移前告诉用户「一并迁移用到的 N 张卡 / 只迁移卡组」.
+ */
+export function missingCardsForDecks(deck_ids: string[], to: DataLayer): string[] {
+  const missing = new Set<string>();
+  for (const deck_id of deck_ids) {
+    const deck = loadDeck(deck_id);
+    if (!deck) {
+      continue;
+    }
+    for (const card_id of deck.卡牌) {
+      if (!cardVisibleFrom(card_id, to)) {
+        missing.add(card_id);
+      }
+    }
   }
+  return [...missing];
+}
+
+/**
+ * 把卡组写入指定位置 (供迁移用).
+ *
+ * - `复制`: 在目标层生成一套独立副本 (新卡组 id); `一并迁移卡牌` 为真时,
+ *   副本引用的卡牌也会 Copy 一份到目标层, 副本改指向新的卡牌 id;
+ * - `移动`: 先写进目标层, 再从原层移除 (同一套卡组只会在一个地方).
+ *
+ * 已经在目标层的不动. 返回写回去的卡组、新建的卡牌张数与跳过数.
+ */
+export function migrateDecks(
+  deck_ids: string[],
+  to: DataLayer,
+  mode: 'move' | 'copy',
+  options: { 一并迁移卡牌?: boolean } = {},
+): { 写入: Deck[]; 卡牌: number; 跳过: number } {
+  const card_id_map: Record<string, string> = {};
+  let card_count = 0;
+  if (options.一并迁移卡牌 && mode === 'copy') {
+    const missing = missingCardsForDecks(deck_ids, to);
+    if (missing.length) {
+      const result = migrateCards(missing, to, 'copy');
+      Object.assign(card_id_map, result.新id);
+      card_count = result.写入.length;
+    }
+  } else if (options.一并迁移卡牌) {
+    const missing = missingCardsForDecks(deck_ids, to);
+    if (missing.length) {
+      const result = migrateCards(missing, to, 'move');
+      card_count = result.写入.length;
+    }
+  }
+
+  const 写入: Deck[] = [];
+  let 跳过 = 0;
+  for (const deck_id of deck_ids) {
+    const hit = loadDeckLayers().get(deck_id);
+    if (!hit || hit.layer === to) {
+      // 已经在目标层 / 已经没了: 不动
+      跳过 += 1;
+      continue;
+    }
+    const 卡牌 = hit.value.卡牌.map(id => card_id_map[id] ?? id);
+    if (mode === 'move') {
+      const moved = DeckSchema.parse({ ...hit.value, 卡牌 });
+      writeDeckToLayer(moved, to);
+      // 先在目标层落盘再删原层: 中途出错也只会多一份, 不会丢
+      deleteDeckFromLayer(deck_id, hit.layer);
+      写入.push(moved);
+      continue;
+    }
+    const copy = DeckSchema.parse({ ...hit.value, id: uuidv4(), 卡牌 });
+    writeDeckToLayer(copy, to);
+    写入.push(copy);
+  }
+  return { 写入, 卡牌: card_count, 跳过 };
 }
 
 /** 卡牌库中是否已有卡牌 (没有卡牌时卡组没有内容可选) */

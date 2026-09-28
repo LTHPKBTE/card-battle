@@ -58,6 +58,15 @@
               <option value="">全部阵营</option>
               <option v-for="faction in CARD_FACTIONS" :key="faction" :value="faction">{{ faction }}</option>
             </select>
+            <select
+              v-if="layerOptions.length > 1"
+              v-model="newLayer"
+              class="rarity-select layer-select"
+              title="新建的卡牌放在哪: 放的位置范围越小, 能用到它的地方越少"
+              aria-label="新建位置"
+            >
+              <option v-for="layer in layerOptions" :key="layer" :value="layer">新建到: {{ layer }}</option>
+            </select>
             <button
               class="clp-select-toggle"
               :class="{ active: selectMode }"
@@ -73,6 +82,15 @@
               {{ allChecked ? '取消全选' : '全选' }}
             </button>
             <span class="clp-bulk-count">已选 {{ checkedIds.length }} 张</span>
+            <button
+              class="clp-bulk-btn"
+              type="button"
+              :disabled="checkedIds.length === 0 || layerOptions.length < 2"
+              title="把选中的卡牌搬到别的位置 (聊天 / 角色卡 / 全局)"
+              @click="openMigrate"
+            >
+              迁移…
+            </button>
             <button
               class="clp-bulk-btn danger"
               type="button"
@@ -105,6 +123,7 @@
                   {{ card.阵营 }}
                 </span>
                 <small v-if="issueList(card.id).length" class="item-issue">数据不完整</small>
+                <small v-if="cardLayerName(card.id)" class="item-layer">{{ cardLayerName(card.id) }}</small>
               </span>
               <span class="item-type">{{ card.type }}{{ card.series ? `·${card.series}` : '' }}</span>
             </button>
@@ -179,6 +198,16 @@
         </div>
       </div>
     </div>
+
+    <!-- 批量迁移: 选目标位置 + 移动/复制 (两个面板共用同一个弹窗) -->
+    <MigrationDialog
+      v-if="migrateOpen"
+      :标题="`迁移 ${checkedIds.length} 张卡牌`"
+      :说明="migrateHint"
+      :来源="migrateSources"
+      @关闭="migrateOpen = false"
+      @确认="applyMigrate"
+    />
   </div>
 </template>
 
@@ -190,11 +219,13 @@ import AiContextField from '../AI/components/AiContextField.vue';
 import AiSettingsLink from '../AI/components/AiSettingsLink.vue';
 import AiPromptLink from '../AI/components/AiPromptLink.vue';
 import {
+  cardLayer,
   createCard,
   deleteCardById,
   exportLibraryToJson,
   importLibraryFromText,
   loadCards,
+  migrateCards,
   parseLibraryExport,
   saveCard,
 } from './data';
@@ -202,6 +233,16 @@ import { cardIssueMap } from './校验';
 import { CARD_FACTIONS, RARITIES, type Card, type CardFaction, type CardInput } from './schema';
 import { confirmDialog } from '../共用/弹窗';
 import PanelLookSettings from '../共用/PanelLookSettings.vue';
+import MigrationDialog from '../共用/迁移.vue';
+import {
+  LAYER_HINTS,
+  availableLayers,
+  flushLayerSettings,
+  onLayerSettingsChanged,
+  preferredLayer,
+  saveLayerSettings,
+  type DataLayer,
+} from '../共用/层级';
 import {
   flushPanelLookSave,
   loadPanelLook,
@@ -225,9 +266,28 @@ const saveState = ref<{ state: 'idle' | 'saving' | 'saved' | 'error'; error: str
 /** 编辑器组件引用: 切换卡牌/页面/关闭面板前, 先让它提交机读区 (失焦式校验) */
 const editorRef = ref<InstanceType<typeof CardEditor> | null>(null);
 
-/** 批量选择模式 (多选删卡) */
+/** 批量选择模式 (多选删卡 / 多选迁移) */
 const selectMode = ref(false);
 const checkedIds = ref<string[]>([]);
+
+// ---- 数据位置 (聊天 / 角色卡 / 全局) ----
+
+/** 能放卡牌的位置 (没有对话时聊天层不可用, 列表会短一些) */
+const layerOptions = availableLayers();
+/** 新建的卡牌放哪一层 (存脚本变量, 换聊天也不会丢) */
+const newLayer = ref<DataLayer>(preferredLayer());
+const off_layer = onLayerSettingsChanged(() => {
+  newLayer.value = preferredLayer();
+});
+watch(newLayer, value => {
+  saveLayerSettings({ 新建位置: value });
+});
+
+/** 这张卡住在哪一层; 聊天层的卡不标, 只有「别处也能用」的卡才值得提醒 */
+function cardLayerName(card_id: string): string {
+  const layer = cardLayer(card_id);
+  return layer && layer !== '聊天' ? layer : '';
+}
 
 // ---- 垫底外观 (与卡组/战斗共享同一份设置) ----
 const showLook = ref(false);
@@ -382,6 +442,56 @@ async function deleteChecked() {
 
 function refreshCards() {
   cards.value = loadCards();
+}
+
+// ---- 批量迁移 ----
+
+const migrateOpen = ref(false);
+
+/** 选中的卡牌各自现在在哪一层 */
+const migrateSources = computed<DataLayer[]>(() => {
+  const layers = checkedIds.value
+    .map(id => cardLayer(id))
+    .filter((layer): layer is DataLayer => layer !== null);
+  return [...new Set(layers)];
+});
+
+const migrateHint = computed(() => {
+  const parts = migrateSources.value.map(layer => `${layer} 的卡 (${LAYER_HINTS[layer]})`);
+  return parts.length ? `选中的卡牌现在是: ${parts.join('、')}。` : '';
+});
+
+function openMigrate() {
+  if (checkedIds.value.length === 0) {
+    toastr.warning('先勾选要迁移的卡牌', '迁移卡牌');
+    return;
+  }
+  // 正在编辑的草稿先落盘, 否则迁移完可能又被写回旧位置
+  commitAndSave();
+  migrateOpen.value = true;
+}
+
+function applyMigrate(choice: { 目标: DataLayer; 方式: 'move' | 'copy' }) {
+  migrateOpen.value = false;
+  const ids = [...checkedIds.value];
+  try {
+    const result = migrateCards(ids, choice.目标, choice.方式);
+    if (result.写入.length === 0) {
+      toastr.info(`选中的卡牌本来就在「${choice.目标}」, 没有需要搬的`, '迁移卡牌');
+    } else if (choice.方式 === 'move') {
+      toastr.success(`已把 ${result.写入.length} 张卡牌移到「${choice.目标}」`, '迁移卡牌');
+    } else {
+      toastr.success(
+        `已在「${choice.目标}」复制出 ${result.写入.length} 份副本 (副本是独立的卡, 之后改动互不影响)`,
+        '迁移卡牌',
+      );
+    }
+  } catch (error) {
+    toastr.error(error instanceof Error ? error.message : String(error), '迁移失败');
+    return;
+  }
+  checkedIds.value = [];
+  refreshCards();
 }
 
 /** 卡牌库里「数据还没填完 / 数值有问题」的卡牌 (id -> 问题说明) */
@@ -655,7 +765,9 @@ onBeforeUnmount(() => {
   window.removeEventListener('beforeunload', commitAndSave);
   narrowMq?.removeEventListener('change', syncNarrow as EventListener);
   off_look();
+  off_layer();
   flushPanelLookSave();
+  flushLayerSettings();
 });
 
 // 切换聊天 (iframe reload) / 页面卸载前, 尽量把草稿落盘
@@ -1121,6 +1233,22 @@ window.addEventListener('beforeunload', commitAndSave);
   border-radius: 4px;
   padding: 0 4px;
   white-space: nowrap;
+}
+
+/* 位置标记: 这张卡在聊天之外的地方也能用 (角色卡 / 全局) */
+.item-layer {
+  flex: none;
+  font-size: 0.7em;
+  color: rgb(166 227 161 / 0.75);
+  border: 1px solid rgb(166 227 161 / 0.3);
+  border-radius: 4px;
+  padding: 0 4px;
+  white-space: nowrap;
+}
+
+.layer-select {
+  width: auto;
+  flex: none;
 }
 
 .item-name {

@@ -1,5 +1,19 @@
-// 卡牌库数据访问层: 以 "角色卡变量 (character)" 为存储, 命名空间 `卡牌库`
+// 卡牌库数据访问层: 数据可以放在三个层级 (聊天 / 角色卡 / 全局)
+// - 读取时把三层合并 (小范围覆盖大范围), 面板看到的是「这一份数据里可用的全部卡牌」
+// - 写入时写回卡牌「住」的那一层 (新建的卡牌写进位置偏好里选的那一层)
+// - 层级的读写细节在 ../共用/层级.ts
 import { literalYamlify, parseString, uuidv4 } from '../共用/平台';
+import {
+  DATA_LAYERS,
+  availableLayers,
+  mergeLayers,
+  preferredLayer,
+  readLayer,
+  writeLayer,
+  deleteLayerKey,
+  type DataLayer,
+  type Layered,
+} from '../共用/层级';
 import {
   CARD_EXPORT_FORMAT,
   CARD_LIBRARY_KEY,
@@ -92,16 +106,44 @@ export function migrateLibrary(raw: unknown): CardLibrary {
   return CardLibrarySchema.parse(migrateRaw(raw));
 }
 
-/** 读取卡牌库整体数据 (若角色卡变量中还不存在则返回空库, 并按版本迁移) */
+/** 读取某一层里的卡牌库 (该层没有数据时是空库) */
+export function loadLayerLibrary(layer: DataLayer): CardLibrary {
+  return migrateLibrary(readLayer(layer, CARD_LIBRARY_KEY));
+}
+
+/** 三层各自的卡牌记录 (按 id) */
+export function loadLayerRecords(): Partial<Record<DataLayer, Record<string, Card>>> {
+  const records: Partial<Record<DataLayer, Record<string, Card>>> = {};
+  for (const layer of DATA_LAYERS) {
+    records[layer] = loadLayerLibrary(layer).卡牌;
+  }
+  return records;
+}
+
+/** 合并三层后的卡牌: id → { 卡牌, 来自哪一层 } */
+export function loadCardLayers(): Map<string, Layered<Card>> {
+  return mergeLayers(loadLayerRecords());
+}
+
+/**
+ * 读取卡牌库整体数据 (三层合并的结果).
+ * 返回的结构与原格式一致, 但 `版本` 总是当前版本 (各层写入时各自迁移并落盘).
+ */
 export function loadLibrary(): CardLibrary {
-  const variables = getVariables({ type: 'character' });
-  return migrateLibrary(_.get(variables, CARD_LIBRARY_KEY));
+  return CardLibrarySchema.parse({
+    版本: CARD_LIBRARY_VERSION,
+    卡牌: Object.fromEntries([...loadCardLayers()].map(([id, hit]) => [id, hit.value])),
+  });
 }
 
 /** 读取全部卡牌, 返回副本数组 (顺序按记录插入顺序, 与 UI 排序无关) */
 export function loadCards(): Card[] {
-  const library = loadLibrary();
-  return _.values(library.卡牌);
+  return [...loadCardLayers().values()].map(hit => hit.value);
+}
+
+/** 这张卡「住」在哪一层; 不存在的卡返回 null */
+export function cardLayer(card_id: string): DataLayer | null {
+  return loadCardLayers().get(card_id)?.layer ?? null;
 }
 
 /**
@@ -118,31 +160,34 @@ export function loadCardsByFaction(faction: CardFaction | ''): Card[] {
 
 /** 依据 id 读取一张卡牌; 不存在时返回 undefined */
 export function loadCard(card_id: string): Card | undefined {
-  return loadLibrary().卡牌[card_id];
+  return loadCardLayers().get(card_id)?.value;
 }
 
-/** 写回单张卡牌 (新增或覆盖), 保存前按 schema 校验 */
-export function saveCard(card: CardInput): void {
+/** 写入某一层里的单张卡牌 (内部用) */
+function writeCardToLayer(card: Card, layer: DataLayer): void {
+  const library = loadLayerLibrary(layer);
+  library.版本 = CARD_LIBRARY_VERSION;
+  library.卡牌[card.id] = card;
+  writeLayer(layer, CARD_LIBRARY_KEY, CardLibrarySchema.parse(library));
+}
+
+/**
+ * 写入单张卡牌 (新增或覆盖), 保存前按 schema 校验.
+ *
+ * `layer` 省略时写回这张卡原本所在的层 (不填就不会把一张全局卡偷偷搬进当前聊天);
+ * 是一张新卡时才落到位置偏好里选的层.
+ */
+export function saveCard(card: CardInput, layer?: DataLayer): void {
   const parsed = CardSchema.parse(card);
   // 机读区为空时彻底移除该键, 避免被存成 null
   if (parsed.machine_effect == null) {
     delete parsed.machine_effect;
   }
-  updateVariablesWith(
-    variables => {
-      _.set(variables, `${CARD_LIBRARY_KEY}.版本`, CARD_LIBRARY_VERSION);
-      if (!_.has(variables, `${CARD_LIBRARY_KEY}.卡牌`)) {
-        _.set(variables, `${CARD_LIBRARY_KEY}.卡牌`, {});
-      }
-      _.set(variables, `${CARD_LIBRARY_KEY}.卡牌.${parsed.id}`, parsed);
-      return variables;
-    },
-    { type: 'character' },
-  );
+  writeCardToLayer(parsed, layer ?? cardLayer(parsed.id) ?? preferredLayer());
 }
 
 /** 新建一张卡牌并立即写回, 返回写回后的完整卡牌 */
-export function createCard(partial?: Partial<CardInput>): Card {
+export function createCard(partial?: Partial<CardInput>, layer?: DataLayer): Card {
   const card = CardSchema.parse({
     id: uuidv4(),
     name: '',
@@ -151,14 +196,57 @@ export function createCard(partial?: Partial<CardInput>): Card {
     ...partial,
   });
   card.created_at = Date.now();
-  saveCard(card);
+  saveCard(card, layer ?? preferredLayer());
   return card;
 }
 
-/** 删除一张卡牌, 返回是否实际删除 */
+/** 删除一张卡牌 (从它所在的那一层删), 返回是否实际删除 */
 export function deleteCardById(card_id: string): boolean {
-  const { delete_occurred } = deleteVariable(`${CARD_LIBRARY_KEY}.卡牌.${card_id}`, { type: 'character' });
-  return delete_occurred;
+  const layer = cardLayer(card_id);
+  if (!layer) {
+    return false;
+  }
+  deleteLayerKey(layer, `${CARD_LIBRARY_KEY}.卡牌.${card_id}`);
+  return true;
+}
+
+/**
+ * 把卡牌写入指定位置 (供迁移用).
+ *
+ * - `复制`: 在目标层生成一份独立副本 (新 id), 两边之后互不影响;
+ * - `移动`: 先写进目标层, 再从原层移除 (同一张卡只会在一个地方).
+ *
+ * 返回写回去的卡牌 (复制时是新 id 的那一份) 与产生的新 id 映射.
+ */
+export function migrateCards(
+  card_ids: string[],
+  to: DataLayer,
+  mode: 'move' | 'copy',
+): { 写入: Card[]; 新id: Record<string, string> } {
+  const 写入: Card[] = [];
+  const 新id: Record<string, string> = {};
+  for (const card_id of card_ids) {
+    const hit = loadCardLayers().get(card_id);
+    if (!hit) {
+      continue;
+    }
+    if (mode === 'move') {
+      if (hit.layer === to) {
+        continue;
+      }
+      writeCardToLayer(hit.value, to);
+      // 先在目标层落盘再删原层: 中途出错也只会多一份, 不会丢
+      deleteLayerKey(hit.layer, `${CARD_LIBRARY_KEY}.卡牌.${card_id}`);
+      写入.push(hit.value);
+      continue;
+    }
+    // 复制: 副本是独立的一张卡 (自己的 id), 之后改哪一边都不会影响另一边
+    const copy = CardSchema.parse({ ...hit.value, id: uuidv4() });
+    writeCardToLayer(copy, to);
+    新id[card_id] = copy.id;
+    写入.push(copy);
+  }
+  return { 写入, 新id };
 }
 
 // ---- 导出 / 导入 ----
@@ -245,6 +333,11 @@ export function importLibraryFromText(text: string): ImportResult {
     saveCard(card);
   }
   return { imported, updated, total: cards.length };
+}
+
+/** 能在哪些位置放卡牌 (供面板的位置选择器列出) */
+export function cardLayers(): DataLayer[] {
+  return availableLayers();
 }
 
 /** 机读效果对象 -> YAML 文本 (供编辑器显示) */

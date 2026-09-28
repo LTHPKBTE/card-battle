@@ -3,6 +3,17 @@
 // 运行: node src/卡牌系统/共用/测试.ts
 
 import { formatSize, jsonBytes } from './体积.ts';
+import {
+  DATA_LAYERS,
+  LAYER_HINTS,
+  LayerSettingsSchema,
+  availableLayers,
+  isNarrowing,
+  layerRank,
+  loadLayerSettings,
+  mergeLayers,
+  readLayer,
+} from './层级.ts';
 import { normalizeNumberInput, numberInputFallback, resolveNumberInput } from './数字.ts';
 import {
   ERROR_NOTICE_MS,
@@ -236,6 +247,40 @@ section('8 浮动提示 (信息 4 秒消失 / 错误留着 / 超量挤掉)');
 
   check('按 id 关掉一条', dismissNotice(mixed, 3).map(item => item.id).join(',') === '2,4');
   check('关不存在的 id 原样返回', dismissNotice(mixed, 99).length === 3);
+}
+
+section('9 数据层级 (合并 / 范围大小 / 位置偏好)');
+{
+  check('三层按范围从小到大排列', DATA_LAYERS.join(',') === '聊天,角色卡,全局');
+  check('全局范围最大', layerRank('全局') > layerRank('角色卡') && layerRank('角色卡') > layerRank('聊天'));
+  check('全局搬到聊天是缩小范围', isNarrowing('全局', '聊天'));
+  check('聊天搬到全局不是缩小范围', !isNarrowing('聊天', '全局'));
+  check('原地不算缩小范围', !isNarrowing('角色卡', '角色卡'));
+  check('每层都有一句说明', DATA_LAYERS.every(layer => Boolean(LAYER_HINTS[layer])));
+
+  // 合并: 小范围覆盖同名 id, 不同 id 各自保留
+  const merged = mergeLayers({
+    全局: { a: '全局a', b: '全局b' },
+    角色卡: { b: '角色卡b', c: '角色卡c' },
+    聊天: { c: '聊天c' },
+  });
+  check('只有全局有的保留', merged.get('a')?.value === '全局a');
+  check('角色卡覆盖全局', merged.get('b')?.value === '角色卡b' && merged.get('b')?.layer === '角色卡');
+  check('聊天覆盖角色卡', merged.get('c')?.value === '聊天c' && merged.get('c')?.layer === '聊天');
+  check('缺层的记录照常合并', mergeLayers({ 全局: { x: 'x' } }).get('x')?.value === 'x');
+  check('三层都空时是空表', mergeLayers({}).size === 0);
+
+  // 位置偏好: 没有脚本变量时用默认值, 且不抛错
+  const settings = loadLayerSettings();
+  check('默认新建位置是当前聊天', settings.新建位置 === '聊天');
+  check('默认会提醒缩小范围', settings.缩小时不再提示 === false);
+  check('不认识的位置名回退到当前聊天', LayerSettingsSchema.parse({ 新建位置: '宇宙' }).新建位置 === '聊天');
+  check('认识的位置名照原样保留', LayerSettingsSchema.parse({ 新建位置: '全局' }).新建位置 === '全局');
+  check('「不再提示」只有 true 才算开', LayerSettingsSchema.parse({ 缩小时不再提示: 'yes' }).缩小时不再提示 === false);
+
+  // node 环境下没有酒馆变量域, 所有读写都该安全降级
+  check('没有酒馆变量域时列不出位置', availableLayers().length === 0);
+  check('读不到层时返回 undefined', readLayer('全局', '任意键') === undefined);
 }
 
 console.log(`\n通过 ${passed} 项, 失败 ${failed} 项`);
