@@ -111,9 +111,8 @@
               <input v-model="energySwitch" type="checkbox" />
               上场消耗能量
             </label>
-            <label class="bt-check" title="关掉后每回合只补「上限涨的那部分」, 花掉的能量不会回来">
-              <input v-model="energyRefill" type="checkbox" />
-              行动时补满能量
+            <label title="轮到自己行动时补充上限的百分比 (向上取整); 100 = 补满, 0 = 不补">
+              能量补充比例 % <NumberField v-model="energyRefillRatio" :min="0" :max="100" :fallback="100" />
             </label>
             <label>随机种子 <NumberField v-model="seed" :fallback="1" /></label>
             <label>
@@ -145,6 +144,13 @@
             >
               <input v-model="guardRule" type="checkbox" />
               场上还有卡就不能打脸
+            </label>
+            <label
+              class="bt-check"
+              title="第 1 回合的先手方不能普通攻击, 只能摆牌与发动技能 (技能里的攻击不受限)"
+            >
+              <input v-model="openingNoAttack" type="checkbox" />
+              先手首回合禁普通攻击
             </label>
             <label title="打死一张卡时, 超出它剩余生命的那部分伤害按这个比例传给它的控制者 (0 = 不传, 1 = 全额)">
               溢出传伤比例
@@ -680,6 +686,7 @@ import {
   cardCostFor,
   energyEnabled,
   energyMaxFor,
+  isFirstTurnAttackBlocked,
   isGuardBlocked,
   listActivatable,
   type ActivatableEffect,
@@ -1648,10 +1655,23 @@ const selectionHint = computed(() => {
   if (sel.effect_id) {
     return '拖动到目标上或点「发动技能」';
   }
+  if (attackLockedSelection()) {
+    return '第 1 回合的先手方不能普通攻击 —— 先摆牌或发动技能';
+  }
   return guardBlocksSelection()
     ? '对手场上还有卡, 暂时不能直接打脸 —— 先攻击对手场上的卡'
     : '点击 / 拖动到敌方卡牌或敌方头像上发起攻击';
 });
+
+/** 第 1 回合的先手方被禁普攻 (当前选中的卡不能出手) */
+function attackLockedSelection(): boolean {
+  const sel = currentSelection.value;
+  const current = state.value;
+  if (!sel || sel.zone !== 'FIELD' || sel.effect_id || !current) {
+    return false;
+  }
+  return isFirstTurnAttackBlocked(current, sel.side);
+}
 
 /** 当前选中的卡想打脸会被守卫规则挡下 (提示文案与「头像能否点」共用同一个判断) */
 function guardBlocksSelection(): boolean {
@@ -1677,6 +1697,9 @@ function isTargetable(card: CardInstance): boolean {
   if (sel.effect_id) {
     return true;
   }
+  if (attackLockedSelection()) {
+    return false;
+  }
   return card.controller === otherPlayer(sel.side) && card.zone === 'FIELD';
 }
 
@@ -1689,8 +1712,8 @@ function isPanelTargetable(side: PlayerId): boolean {
   if (sel.effect_id) {
     return true;
   }
-  // 守卫规则把脸挡住时干脆不让它成为目标, 免得点上去才发现打不了
-  return !guardBlocksSelection() && side === otherPlayer(sel.side);
+  // 守卫规则 / 先手首回合禁攻把脸挡住时干脆不让它成为目标, 免得点上去才发现打不了
+  return !attackLockedSelection() && !guardBlocksSelection() && side === otherPlayer(sel.side);
 }
 
 /** 手牌能否放到这个空位 */
@@ -1754,6 +1777,8 @@ async function performAttackWith(
     const attacker = current?.cards[card_id];
     if (attacker && attacker.zone === 'FIELD' && attacker.attacked_this_turn) {
       noticeInfo('这张卡本轮已经攻击过 (轮到自己行动时恢复)');
+    } else if (current && isFirstTurnAttackBlocked(current, side)) {
+      noticeInfo('第 1 回合的先手方不能普通攻击 (摆牌与发动技能不受限)');
     } else if (current && attacker && isGuardBlocked(current, attacker, target)) {
       noticeInfo('对手场上还有卡, 不能直接打脸 —— 先攻击对手场上的卡');
     } else {
@@ -1982,7 +2007,7 @@ const energySwitch = ref(true);
 const energyStart = ref(1);
 const energyPerTurn = ref(1);
 const energyCap = ref(10);
-const energyRefill = ref(true);
+const energyRefillRatio = ref(100);
 const first = ref<PlayerId>('PLAYER');
 const seed = ref(1);
 const recycle = ref<'GRAVEYARD' | 'NONE'>('GRAVEYARD');
@@ -1990,6 +2015,7 @@ const drawPerTurn = ref(1);
 const recycleLimit = ref(0);
 const recyclePenalty = ref(1);
 const guardRule = ref(true);
+const openingNoAttack = ref(true);
 const splashRatio = ref(0.5);
 const turnLimit = ref(30);
 
@@ -2026,13 +2052,14 @@ function buildSetup(): BattleSetup | null {
     起始能量: energyStart.value,
     能量增长: energyPerTurn.value,
     能量上限: energyCap.value,
-    能量补满: energyRefill.value,
+    能量补充比例: energyRefillRatio.value,
     先手: first.value,
     牌库轮换: recycle.value,
     每回合抽牌: drawPerTurn.value,
     洗牌上限: recycleLimit.value,
     洗牌惩罚: recyclePenalty.value,
     守卫规则: guardRule.value,
+    先手首回合禁攻: openingNoAttack.value,
     溢出传伤: splashRatio.value,
     回合上限: turnLimit.value,
   };

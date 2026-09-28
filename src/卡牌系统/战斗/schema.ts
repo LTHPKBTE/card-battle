@@ -120,8 +120,8 @@ export const BattleSetupSchema = z.object({
   能量增长: z.coerce.number().prefault(1),
   /** 能量上限 (封顶) */
   能量上限: z.coerce.number().prefault(10),
-  /** 轮到自己行动时是否把能量补满 (关掉则只补「上限涨的那部分」) */
-  能量补满: z.boolean().prefault(true),
+  /** 轮到自己行动时补充上限的百分比 (0~100, 向上取整; 100 = 补满) */
+  能量补充比例: z.coerce.number().prefault(100),
   /** 先手方 */
   先手: z.enum(['PLAYER', 'ENEMY']).prefault('PLAYER'),
   /** 牌库抽空时的处理方式 */
@@ -134,11 +134,23 @@ export const BattleSetupSchema = z.object({
   洗牌惩罚: z.coerce.number().prefault(1),
   /** 守卫规则: 对手场上还有卡时, 普通攻击不能直接打对方本人 */
   守卫规则: z.boolean().prefault(true),
+  /** 第 1 回合的先手方不能普通攻击 (只能摆牌 + 发动技能) */
+  先手首回合禁攻: z.boolean().prefault(true),
   /** 溢出传伤比例 (0~1): 打死一张卡后多余的伤害按此比例传给该卡的控制者 */
   溢出传伤: z.coerce.number().prefault(0.5),
   /** 回合上限 (0 = 不限); 打满后按剩余生命比例判定 */
   回合上限: z.coerce.number().prefault(30),
-});
+  /**
+   * 旧设置遗留: 以前只是一个「行动时补满能量」的开关, 后来换成了 `能量补充比例`.
+   * 只用来读旧存档 (读出来就丢掉), 新设置不要再写它.
+   */
+  能量补满: z.boolean().optional(),
+})
+  /** 旧存档迁移: 以前关掉「补满」等于比例 0, 开着等于 100% (也就是现在的缺省) */
+  .transform(({ 能量补满, ...setup }) => ({
+    ...setup,
+    能量补充比例: 能量补满 === false ? 0 : setup.能量补充比例,
+  }));
 export type BattleSetup = z.output<typeof BattleSetupSchema>;
 
 /**

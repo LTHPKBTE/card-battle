@@ -139,6 +139,8 @@ function setup(): BattleState {
     seed: 7,
     opening_hand: 0,
     first: 'ENEMY',
+    // 多数断言直接在第 1 回合出手, 所以这里关掉「先手首回合禁普攻」
+    first_turn_no_attack: false,
   });
   startBattle(state);
   drawCards(state, 'ENEMY', 99);
@@ -464,6 +466,12 @@ section('5. 变量结构: 缺字段时全部走默认值');
   check('溢出传伤默认 0.5', setup.溢出传伤 === 0.5, setup.溢出传伤);
   check('回合上限默认 30', setup.回合上限 === 30, setup.回合上限);
   check('字符串数字会被转成数字', BattleSetupSchema.parse({ 种子: '42' }).种子 === 42);
+  check('旧存档里的「补满 = 关」读成比例 0', BattleSetupSchema.parse({ 能量补满: false }).能量补充比例 === 0);
+  check('旧存档里的「补满 = 开」保持缺省 100', BattleSetupSchema.parse({ 能量补满: true }).能量补充比例 === 100);
+  check(
+    '迁移后的设置里不再留旧字段',
+    !Object.hasOwn(BattleSetupSchema.parse({ 能量补满: true }), '能量补满'),
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -1123,13 +1131,14 @@ section('N. 能量 / 手牌上限 / 询问 (战斗层接得住引擎的新机制
 {
   const setup = BattleSetupSchema.parse({});
   check(
-    '配置缺省: 手牌上限 8 / 能量开 / 起始 1 / 增长 1 / 上限 10 / 补满',
+    '配置缺省: 手牌上限 8 / 能量开 / 起始 1 / 增长 1 / 上限 10 / 补充 100% / 先手首回合禁攻开',
     setup.手牌上限 === 8 &&
       setup.能量开关 === true &&
       setup.起始能量 === 1 &&
       setup.能量增长 === 1 &&
       setup.能量上限 === 10 &&
-      setup.能量补满 === true,
+      setup.能量补充比例 === 100 &&
+      setup.先手首回合禁攻 === true,
     setup,
   );
 }
@@ -1262,6 +1271,34 @@ section('N. 能量 / 手牌上限 / 询问 (战斗层接得住引擎的新机制
     result,
   });
   check('收手照样完成', result.ok && result.ended && lit.active === 'ENEMY', { ok: result.ok, active: lit.active });
+}
+{
+  // 两条新规则要进简报, 让 AI 知道「为什么第 1 回合打不了」与「能量回得慢」
+  const state = createBattle({
+    card_provider: provider,
+    player_deck: ['1'],
+    enemy_deck: ['1'],
+    seed: 7,
+    opening_hand: 0,
+    first: 'ENEMY',
+    energy: { start: 4, per_turn: 0, cap: 4, refill_ratio: 0.5 },
+    first_turn_no_attack: true,
+  });
+  startBattle(state);
+  drawCards(state, 'ENEMY', 99);
+  playCard(state, handCard(state, 'ENEMY', '愿之芽').id);
+  const brief = buildBrief(state, 'ENEMY');
+  const text = renderBrief(brief);
+  check('简报写明先手首回合不能普攻', text.includes('第 1 回合的先手方不能普通攻击'), text);
+  check('先手第 1 回合的场上卡标记为不能攻击', brief.ai_field[0].can_attack === false, brief.ai_field[0]);
+  check('简报写明能量按上限 50% 补充', text.includes('补充上限的 50%'), text);
+
+  const decision = extractDecision(
+    `<battle_action>{"操作":[{"do":"attack","card":"${brief.ai_field[0].id}","target":"PLAYER"}]}</battle_action>`,
+  );
+  const result = applyDecision(state, decision, 'ENEMY');
+  check('AI 出手会被跳过并说明原因', result.ignored.some(line => line.includes('先手方不能普通攻击')), result.ignored);
+  check('跳过之后没有造成伤害', state.players.PLAYER.hp === state.players.PLAYER.hp_max, state.players.PLAYER.hp);
 }
 
 // ---------------------------------------------------------------------------

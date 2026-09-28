@@ -208,7 +208,7 @@ function toBattleConfig(setup: BattleSetup): BattleConfig {
       start: setup.起始能量,
       per_turn: setup.能量增长,
       cap: setup.能量上限,
-      refill: setup.能量补满,
+      refill_ratio: setup.能量补充比例 / 100,
     },
     first: setup.先手,
     recycle: setup.牌库轮换,
@@ -216,6 +216,7 @@ function toBattleConfig(setup: BattleSetup): BattleConfig {
     recycle_limit: setup.洗牌上限,
     recycle_penalty: setup.洗牌惩罚,
     guard: setup.守卫规则,
+    first_turn_no_attack: setup.先手首回合禁攻,
     splash: setup.溢出传伤,
     turn_limit: setup.回合上限,
   };

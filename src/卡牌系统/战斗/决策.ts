@@ -24,6 +24,7 @@ import {
   canPlayCard,
   cardCostFor,
   endSide,
+  isFirstTurnAttackBlocked,
   isGuardBlocked,
   listAsks,
   moveCardTo,
@@ -317,6 +318,9 @@ function executeOp(state: BattleState, op: unknown, side: PlayerId): DecisionOpR
       return { detail: `跳过 攻击 ${card.name}(${card_id}) → ${target}: 不存在的目标 id`, applied: false };
     }
     if (!canAttack(state, card_id)) {
+      if (isFirstTurnAttackBlocked(state, card.controller)) {
+        return { detail: `跳过 攻击 ${card.name}(${card_id}): 第 1 回合的先手方不能普通攻击`, applied: false };
+      }
       return { detail: `跳过 攻击 ${card.name}(${card_id}): 不在场上或本回合已攻击`, applied: false };
     }
     // 守卫规则挡下打脸时说清楚原因 (不读操作里的 ignore_guard —— 那是卡的能力, 走 activate 发动)

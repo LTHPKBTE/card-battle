@@ -12,6 +12,7 @@ import {
   canPayEnergy,
   canPlayCard,
   cardCostFor,
+  energyConfig,
   listActivatable,
   listAsks,
   recycleSurcharge,
@@ -101,6 +102,10 @@ export interface BriefStatus {
 export interface BriefRules {
   /** 对手场上还有卡时不能直接打脸 */
   guard: boolean;
+  /** 第 1 回合先手方不能普通攻击 */
+  first_turn_no_attack: boolean;
+  /** 行动时补充上限的百分比 (0~1; 1 = 补满; 能量关闭时为 0) */
+  energy_refill_ratio: number;
   /** 溢出传伤比例 (0~1) */
   splash: number;
   /** 每方行动开始时抽几张牌 */
@@ -224,8 +229,11 @@ function buildStatuses(state: BattleState): BriefStatus[] {  return Object.value
 function buildRules(state: BattleState, ai: PlayerId): BriefRules {
   const rules = battleRules(state);
   const opponent = otherPlayer(ai);
+  const energy = energyConfig(state);
   return {
     guard: rules.guard,
+    first_turn_no_attack: rules.first_turn_no_attack,
+    energy_refill_ratio: energy.enabled ? energy.refill_ratio : 0,
     splash: rules.splash,
     draw_per_turn: rules.draw_per_turn,
     recycle_limit: rules.recycle_limit,
@@ -360,6 +368,12 @@ function renderRules(rules: BriefRules): string {
   const parts: string[] = [
     rules.guard ? '对手场上还有卡时不能直接攻击对手本人' : '可以直接攻击对手本人 (无守卫规则)',
   ];
+  if (rules.first_turn_no_attack) {
+    parts.push('第 1 回合的先手方不能普通攻击 (只能摆牌与发动技能)');
+  }
+  if (rules.energy_refill_ratio > 0 && rules.energy_refill_ratio < 1) {
+    parts.push(`能量每次行动补充上限的 ${Math.round(rules.energy_refill_ratio * 100)}% (向上取整, 余额可累积)`);
+  }
   if (rules.splash > 0) {
     parts.push(`打爆一张卡时超出其生命的伤害按 ${Math.round(rules.splash * 100)}% 传给该卡的控制者`);
   }
