@@ -2,12 +2,12 @@
 
 本仓库以 **GPL-3.0-only** 发布 (见 [`LICENSE`](./LICENSE))。
 
-构建产物 `dist/卡牌系统/酒馆助手脚本-卡牌系统.json` 中**内联**了下列第三方代码。
+构建产物 `dist/<Debug|Release>/卡牌系统/酒馆助手脚本-卡牌系统.json` 中**内联**了下列第三方代码。
 它们各自按其原始许可证授权, 本仓库不对它们主张任何权利。
 
 ## 内联进构建产物的组件
 
-下面这份清单是从产物里逐个模块核出来的 (`dist/卡牌系统/index.js` 中以 `./node_modules/...`
+下面这份清单是从产物里逐个模块核出来的 (`dist/<Debug|Release>/卡牌系统/index.js` 中以 `./node_modules/...`
 为模块名的模块), 三者均为 MIT。用于解析/转换源码的 loader 本身 (`sass-loader`、`postcss-loader`、
 `ts-loader`、`eslint-webpack-plugin` 等) 只在构建时运行, 其代码不进产物。
 

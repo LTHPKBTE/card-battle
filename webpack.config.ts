@@ -8,9 +8,11 @@
 //      `../tavern_helper_template/@types` 的 (模板是 AFPL 许可, 不能把它的代码打进产物,
 //      详见 开发说明.md 的「许可与依赖边界」)
 //
-// 用法: `corepack pnpm build:dev` (开发) / `corepack pnpm build` (生产)
-//   → `dist/卡牌系统/index.js`
-//   → `dist/卡牌系统/酒馆助手脚本-卡牌系统.json`  ← 酒馆助手「脚本库」里点「导入」选中它
+// 用法: `corepack pnpm build:dev` (开发) / `corepack pnpm build` (生产) / `corepack pnpm build:all` (两个都编)
+//   → `dist/Debug/卡牌系统/index.js` 与 `dist/Debug/卡牌系统/酒馆助手脚本-卡牌系统.json`
+//   → `dist/Release/卡牌系统/index.js` 与 `dist/Release/卡牌系统/酒馆助手脚本-卡牌系统.json`
+//   (两种构建分开存: 生产构建的 `clean` 不会把开发构建的产物删掉, 可以随手对比两边)
+//   酒馆助手「脚本库」里点「导入」选中对应的 JSON 即可
 
 import HtmlInlineScriptWebpackPlugin from 'html-inline-script-webpack-plugin';
 import HtmlWebpackPlugin from 'html-webpack-plugin';
@@ -148,6 +150,8 @@ function parse_configuration(entry: Entry): (_env: any, argv: any) => webpack.Co
       path: path.join(
         import.meta.dirname,
         'dist',
+        // 开发 / 生产分开放: 否则 `output.clean` 会在重新构建时把另一边的产物删掉
+        argv.mode === 'production' ? 'Release' : 'Debug',
         path.relative(import.meta.dirname, script_filepath.dir).replace(/^[^\\/]+[\\/]/, ''),
       ),
       chunkFilename: `${script_filepath.name}.[contenthash].chunk.js`,

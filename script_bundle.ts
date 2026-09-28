@@ -1,14 +1,14 @@
 /* eslint-disable import-x/no-named-as-default, import-x/no-named-as-default-member, import-x/no-nodejs-modules */
 // 酒馆助手脚本 · 打包成可导入的 JSON
 //
-// webpack 的产物是 `dist/<脚本目录>/index.js`, 而酒馆助手「脚本库」的导入格式是一份 JSON
+// webpack 的产物是 `dist/<Debug|Release>/<脚本目录>/index.js`, 而酒馆助手「脚本库」的导入格式是一份 JSON
 // (`@types/function/script.d.ts` 里的 `Script` 类型): 脚本代码放在 `content` 字段里, 再带上名称 / id 等元数据.
 //
 // 这个文件就是两者的转换器, 并作为 webpack 插件挂在每个脚本入口上:
 //
 //   pnpm build / pnpm build:dev
-//     → dist/<脚本目录>/index.js
-//     → dist/<脚本目录>/酒馆助手脚本-<脚本名>.json   ← 酒馆里点「导入」选中它即可
+//     → dist/<Debug|Release>/<脚本目录>/index.js
+//     → dist/<Debug|Release>/<脚本目录>/酒馆助手脚本-<脚本名>.json   ← 酒馆里点「导入」选中它即可
 //
 // 关于 id (酒馆助手里 id 相同的脚本会被覆盖, id 不同则新增):
 // - 默认按脚本目录路径算出一个固定 id (UUID v5), 每次打包都一样, 所以重复导入不会攒出一堆同名脚本;

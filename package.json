@@ -7,6 +7,7 @@
   "scripts": {
     "build:dev": "webpack --mode development",
     "build": "webpack --mode production",
+    "build:all": "webpack --mode development && webpack --mode production",
     "format": "prettier --write \"src/**/*.{ts,tsx,js,jsx,css,scss,html,vue}\" --no-error-on-unmatched-pattern",
     "lint": "eslint",
     "lint:fix": "eslint --fix",
@@ -15,7 +16,8 @@
     "test:card": "node src/卡牌系统/卡牌/测试.ts",
     "test:ai": "node src/卡牌系统/AI/测试.ts",
     "test:battle": "node src/卡牌系统/战斗/测试.ts",
-    "test:common": "node src/卡牌系统/共用/测试.ts"
+    "test:common": "node src/卡牌系统/共用/测试.ts",
+    "test:data": "node src/卡牌系统/数据/测试.ts"
   },
   "browserslist": [
     "defaults and partially supports es6-module"
