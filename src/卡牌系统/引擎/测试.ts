@@ -104,6 +104,8 @@ interface BuildOptions {
   recycle_penalty?: number;
   /** 守卫规则 (省略 = 引擎缺省 开) */
   guard?: boolean;
+  /** 先手首回合禁普通攻击 (省略 = 测试里默认关掉, 免得几十处第 1 回合的攻击断言都得挪到第 2 回合) */
+  first_turn_no_attack?: boolean;
   /** 溢出传伤比例 (省略 = 引擎缺省 0.5) */
   splash?: number;
   /** 回合上限 (省略 = 引擎缺省 30) */
@@ -126,6 +128,7 @@ function build(player_deck: string[], enemy_deck: string[] = [], options: BuildO
     recycle_limit: options.recycle_limit,
     recycle_penalty: options.recycle_penalty,
     guard: options.guard,
+    first_turn_no_attack: options.first_turn_no_attack ?? false,
     splash: options.splash,
     turn_limit: options.turn_limit,
   });
@@ -1509,13 +1512,33 @@ section('30. 能量 (上场资源): 曲线 / 支付 / 付不起就上不了场')
     { energy: state.players.PLAYER.energy, max: state.players.PLAYER.energy_max },
   );
 
-  attachBattleConfig(state, { ...battleConfig(state)!, energy: { start: 2, per_turn: 0, cap: 2, refill: false } });
+  attachBattleConfig(state, { ...battleConfig(state)!, energy: { start: 2, per_turn: 0, cap: 2, refill_ratio: 0 } });
   syncPlayerEnergy(state, 'PLAYER');
   check(
-    '上限调小 (且不补满) 时余额被压到新上限, 不会超发',
+    '比例 0 (= 不补) 时不再加油, 余额被压到新上限, 不会超发',
     state.players.PLAYER.energy_max === 2 && state.players.PLAYER.energy === 2,
     { energy: state.players.PLAYER.energy, max: state.players.PLAYER.energy_max },
   );
+}
+{
+  // 比例补充 (向上取整): 上限 5, 比例 0.5 → 每次补 ceil(2.5) = 3 点
+  const state = build(['火种'], [], { energy: { start: 5, per_turn: 0, cap: 5, refill_ratio: 0.5 } });
+  const spark = toHand(state, 'PLAYER', '火种');
+  check('开局补 ceil(5 × 0.5) = 3 点 (不是补满)', state.players.PLAYER.energy === 3, state.players.PLAYER.energy);
+  playCard(state, spark.id);
+  check('花掉 1 点后剩 2', state.players.PLAYER.energy === 2, state.players.PLAYER.energy);
+  endSide(state, 'PLAYER');
+  endSide(state, 'ENEMY');
+  check(
+    '回到自己行动再补 3 点 (2 + 3 = 5, 封顶在上限)',
+    state.turn === 2 && state.players.PLAYER.energy === 5 && state.players.PLAYER.energy_max === 5,
+    state.players.PLAYER.energy,
+  );
+}
+{
+  // 比值向上取整, 上限 4 × 0.3 = 1.2 → 2
+  const state = build(['火种'], [], { energy: { start: 4, per_turn: 0, cap: 4, refill_ratio: 0.3 } });
+  check('ceil(4 × 0.3) = 2', state.players.PLAYER.energy === 2, state.players.PLAYER.energy);
 }
 
 section('31. 手牌上限与弃牌询问 (超上限 → 引擎提问 → 面板/AI 回答)');
@@ -2018,6 +2041,59 @@ section('36. 战斗规则: 抽牌时机 / 守卫 / 溢出传伤 / 洗牌代价 /
   const endless = build(['愿之芽'], ['愿之芽'], { turn_limit: 0 });
   endTurn(endless);
   check('turn_limit = 0 时不会因为回合数结束', endless.finished === false && endless.turn === 2, endless.turn);
+
+  // ---- 先手首回合禁普通攻击 (只能摆牌 + 发动技能) ----
+  const opening = build(['愿之芽'], ['愿之芽'], { first_turn_no_attack: true });
+  const mine = toHand(opening, 'PLAYER', '愿之芽');
+  playCard(opening, mine.id);
+  const theirs = toHand(opening, 'ENEMY', '愿之芽');
+  playCard(opening, theirs.id);
+  check('第 1 回合先手的卡不能攻击 (canAttack 为假)', canAttack(opening, mine.id) === false);
+  check('直接 attack 也会被拦下', attack(opening, mine.id, theirs.id) === false);
+  check('被拦下不算出手 (攻击次数还在)', mine.attacked_this_turn === false);
+  check(
+    '日志说明了原因',
+    opening.log.some(entry => entry.message.includes('先手方不能普通攻击')),
+    opening.log.map(entry => entry.message).filter(message => message.includes('先手')),
+  );
+  endSide(opening, 'PLAYER');
+  check('后手方 (第 1 回合的第 2 个行动方) 不受限制', canAttack(opening, theirs.id) === true);
+  check('后手能打先手的卡', attack(opening, theirs.id, mine.id) === true);
+  endSide(opening, 'ENEMY');
+  check('第 2 回合先手解禁', canAttack(opening, mine.id) === true);
+
+  const always = build(['愿之芽'], ['愿之芽'], { first_turn_no_attack: false });
+  const mine2 = toHand(always, 'PLAYER', '愿之芽');
+  playCard(always, mine2.id);
+  const theirs2 = toHand(always, 'ENEMY', '愿之芽');
+  playCard(always, theirs2.id);
+  check('关掉规则后第 1 回合就能攻击', canAttack(always, mine2.id) === true && attack(always, mine2.id, theirs2.id) === true);
+
+  // 技能里的 ATTACK 操作不受这条限制 (那属于「发动技能」)
+  const skill = createCardProvider([
+    {
+      id: 'opening-skill',
+      name: '开场斩',
+      atk: '300',
+      shield: '0',
+      hp: '900',
+      machine_effect: {
+        effects: [{ id: 'slash', on: 'MANUAL', operations: [{ type: 'ATTACK', target: 'RANDOM_ENEMY' }] }],
+      },
+    },
+    { id: 'opening-dummy', name: '木桩', atk: '0', shield: '0', hp: '900' },
+  ]);
+  check('技能攻击测试卡的机读区合法', Object.keys(skill.errors).length === 0, skill.errors);
+  const via_skill = build(['开场斩'], ['木桩'], { provider: skill.provider, first_turn_no_attack: true });
+  const slasher = toHand(via_skill, 'PLAYER', '开场斩');
+  playCard(via_skill, slasher.id);
+  const victim = toHand(via_skill, 'ENEMY', '木桩');
+  playCard(via_skill, victim.id);
+  check(
+    '先手第 1 回合仍能发动带攻击的技能',
+    activate(via_skill, slasher.id, 'slash') === true && victim.current.hp < victim.current.hp_max,
+    { hp: victim.current.hp, max: victim.current.hp_max },
+  );
 }
 
 // ---------------------------------------------------------------------------

@@ -152,6 +152,16 @@ export interface BattleConfig {
    */
   guard?: boolean;
   /**
+   * 第 1 回合先手方不能普通攻击 (默认开).
+   *
+   * 先手一上来就贴脸打人, 后手连一张卡都没来得及摆 —— 这条把先手的第一次行动
+   * 限制成「摆牌 + 发动技能」, 给后手一个布置场面的机会.
+   *
+   * 只拦玩家/AI 的普通攻击 (对外 `attack` 与 `canAttack`); 机读区 `ATTACK` 操作
+   * (技能里写的攻击) 不受影响 —— 那属于「发动技能」.
+   */
+  first_turn_no_attack?: boolean;
+  /**
    * 溢出传伤: 攻击场上卡时, 超出其剩余生命的那部分伤害按此比例 (0~1) 传给该卡的控制者.
    *
    * 默认 0.5. 0 = 关掉. 有了它, 「清场」才有推进度条的收益,
@@ -195,8 +205,13 @@ export interface EnergyConfig {
   per_turn?: number;
   /** 上限封顶, 默认 10 */
   cap?: number;
-  /** 自己行动开始时是否补满上限, 默认 true (false = 只涨新涨的那一点, 会存下来) */
-  refill?: boolean;
+  /**
+   * 自己行动开始时补多少能量: 上限的百分比 (0~1, 默认 1 = 补满).
+   *
+   * 实际补充 `ceil(上限 × 比例)` 点, 封顶在上限; 所以 1 = 每次都补满,
+   * 0.5 = 每次补一半 (向上取整), 0 = 完全不补 (存下来的余额才花得出去).
+   */
+  refill_ratio?: number;
 }
 
 /** 能量曲线的缺省值 */
@@ -205,7 +220,7 @@ export const ENERGY_DEFAULTS: Required<EnergyConfig> = {
   start: 1,
   per_turn: 1,
   cap: 10,
-  refill: true,
+  refill_ratio: 1,
 };
 
 /** 一场战斗里「回合怎么走」的那几条规则 (战斗开始前定死, 存进存档) */
@@ -214,6 +229,7 @@ export interface BattleRules {
   recycle_limit: number;
   recycle_penalty: number;
   guard: boolean;
+  first_turn_no_attack: boolean;
   splash: number;
   turn_limit: number;
 }
@@ -224,6 +240,7 @@ export const RULE_DEFAULTS: BattleRules = {
   recycle_limit: 0,
   recycle_penalty: 1,
   guard: true,
+  first_turn_no_attack: true,
   splash: 0.5,
   turn_limit: 30,
 };
@@ -241,6 +258,8 @@ export function battleRules(state: BattleState): BattleRules {
     recycle_penalty: Math.round(nonNegative(config.recycle_penalty, RULE_DEFAULTS.recycle_penalty)),
     // 守卫开关只认「明确写了 false」, 缺失 / 非法都算开
     guard: config.guard !== false,
+    // 同上: 先手首回合禁攻只认「明确写了 false」
+    first_turn_no_attack: config.first_turn_no_attack !== false,
     splash: Math.min(1, Math.max(0, Number.isFinite(config.splash) ? Number(config.splash) : RULE_DEFAULTS.splash)),
     turn_limit: Math.round(nonNegative(config.turn_limit, RULE_DEFAULTS.turn_limit)),
   };
@@ -325,7 +344,11 @@ export function normalizeBattleState(state: BattleState): void {
 
 /** 取一份填好默认值的能量配置 */
 export function energyConfig(state: BattleState): Required<EnergyConfig> {
-  return { ...ENERGY_DEFAULTS, ...(CONFIGS.get(state)?.energy ?? {}) };
+  const config = { ...ENERGY_DEFAULTS, ...(CONFIGS.get(state)?.energy ?? {}) };
+  // 比例夹到 0~1: 负数当作不补, 大于 1 当作补满
+  const ratio = Number(config.refill_ratio);
+  config.refill_ratio = Number.isFinite(ratio) ? Math.min(1, Math.max(0, ratio)) : ENERGY_DEFAULTS.refill_ratio;
+  return config;
 }
 
 /** 能量系统是否开启 (关掉后卡面费用不再限制上场) */
@@ -393,7 +416,9 @@ export function cardCostFor(state: BattleState, card: CardInstance | null | unde
 /**
  * 把一方当前的能量刷成曲线值 (在它自己行动开始时调).
  *
- * `refill: false` 时只把上限涨的那一点补上, 余额会存下来 (适合「资源累积」类规则).
+ * 每次补充 `ceil(上限 × refill_ratio)` 点 (向上取整), 封顶在上限:
+ * 比例 1 = 补满; 比例 0.5 = 每次补一半; 比例 0 = 完全不补, 只剩自己攒下来的余额.
+ * 余额按「当前 + 补充量」计算, 所以花掉的和攒下的都算数.
  *
  * 参数直接收 `state` 而不是上下文: 演习模式中途改「能量开关」时手上没有上下文,
  * 也要能立刻把两边的能量重算一遍.
@@ -401,19 +426,15 @@ export function cardCostFor(state: BattleState, card: CardInstance | null | unde
 export function syncPlayerEnergy(state: BattleState, player: PlayerId): void {
   const config = energyConfig(state);
   const record = state.players[player];
-  const before_max = Number.isFinite(record.energy_max) ? record.energy_max : 0;
   const energy_max = energyMaxFor(state, state.turn);
   record.energy_max = energy_max;
   if (!config.enabled) {
     record.energy = 0;
     return;
   }
-  if (config.refill) {
-    record.energy = energy_max;
-    return;
-  }
-  const grown = Math.max(0, energy_max - before_max);
-  record.energy = Math.min(energy_max, (Number.isFinite(record.energy) ? record.energy : 0) + grown);
+  const gain = Math.ceil(energy_max * config.refill_ratio);
+  const current = Number.isFinite(record.energy) ? record.energy : 0;
+  record.energy = Math.min(energy_max, current + gain);
 }
 
 /** 把卡放入区域 (不触发事件, 仅调整数据结构) */
@@ -1591,8 +1612,21 @@ export function drawCards(state: BattleState, player: PlayerId, count = 1): numb
 export function canAttack(state: BattleState, attacker_id: string): boolean {
   const attacker = state.cards[attacker_id];
   return Boolean(
-    attacker && attacker.zone === 'FIELD' && !attacker.attacked_this_turn && !state.finished,
+    attacker &&
+      attacker.zone === 'FIELD' &&
+      !attacker.attacked_this_turn &&
+      !state.finished &&
+      !isFirstTurnAttackBlocked(state, attacker.controller),
   );
+}
+
+/**
+ * 第 1 回合的先手方被禁止普通攻击吗 (默认开, 见 `BattleConfig.first_turn_no_attack`).
+ *
+ * 只拦普通攻击: 摆牌、主动发动技能与技能里的 `ATTACK` 操作都不受影响.
+ */
+export function isFirstTurnAttackBlocked(state: BattleState, side: PlayerId): boolean {
+  return state.turn === 1 && side === state.first_side && battleRules(state).first_turn_no_attack;
 }
 
 /** 攻击目标是否合法: 对手场上的卡, 或对手本人 (后者要过守卫规则) */
@@ -1637,6 +1671,9 @@ export function isGuardBlocked(
  * 攻击宣言一旦通过就会消耗本回合的攻击机会, 即使伤害被取消.
  * 打脸 (目标是玩家) 还要过守卫规则, 见 `isGuardBlocked`.
  * 不负责 drain, 由调用方 (对外 API / 顶层操作) 统一收尾.
+ *
+ * 技能里的 `ATTACK` 操作也走这里, 所以它**不**受「先手首回合禁普通攻击」限制 ——
+ * 那条限制只写在对外 `attack()` 与 `canAttack()` 上.
  */
 function performAttack(
   ctx: EngineContext,
@@ -1698,8 +1735,19 @@ export function attack(
   options?: { pierce?: boolean; ignore_guard?: boolean } & ActionOptions,
 ): boolean {
   const ctx = getContext(state);
+  const attacker = state.cards[attacker_id] ?? null;
+  if (attacker && isFirstTurnAttackBlocked(state, attacker.controller)) {
+    ctx.log(
+      'SYSTEM',
+      `第 1 回合的先手方不能普通攻击 —— 只能摆牌与发动技能 (${attacker.name})`,
+      { attacker: attacker.id },
+      'WARN',
+    );
+    drain(state);
+    return false;
+  }
   return withAnswers(ctx, options?.answers, () => {
-    const result = performAttack(ctx, state.cards[attacker_id] ?? null, target, options);
+    const result = performAttack(ctx, attacker, target, options);
     drain(state);
     return result;
   });
