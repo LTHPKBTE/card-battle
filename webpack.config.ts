@@ -118,6 +118,18 @@ function schema_dump(compiler: webpack.Compiler) {
   }
 }
 
+/**
+ * 必须打进产物的三方库 (不能交给 CDN).
+ *
+ * 其余三方库都 external 成 `https://testingcf.jsdelivr.net/npm/<包>/+esm`, 省体积, 但有两个代价:
+ * - 那是**当场生成**的 ESM 兼容层: CJS 包 (如 json5) 只有 `default`, 而生产构建会把
+ *   `import * as ns` 精化成具名导入, 拿不到 `parse` 就在**模块实例化**时抛 `SyntaxError`;
+ * - 顶层 import 失败 = 整个脚本一行都不执行 (按钮注册不上), CDN 不通时同样如此.
+ * json5 / jsonrepair 在「解析用户粘贴的卡牌文本 / 修 AI 输出」的主路径上, 所以直接打进产物,
+ * 真有问题也是构建期报警告, 而不是发布出去才发现整个脚本无声死掉.
+ */
+const BUNDLED_PACKAGES = ['json5', 'jsonrepair'];
+
 function parse_configuration(entry: Entry): (_env: any, argv: any) => webpack.Configuration {
   const should_obfuscate = fs
     .readFileSync(path.join(import.meta.dirname, entry.script), 'utf-8')
@@ -463,6 +475,11 @@ function parse_configuration(entry: Entry): (_env: any, argv: any) => webpack.Co
     // 因此这些包不必打进产物: 依赖直接从全局拿, 其余的三方库从 CDN 动态 import.
     externals: ({ context, request }, callback) => {
       if (!context || !request) {
+        return callback();
+      }
+
+      // 打进产物的包不 external, 交给 webpack 从 node_modules 解析
+      if (BUNDLED_PACKAGES.some(key => request === key || request.startsWith(`${key}/`))) {
         return callback();
       }
 

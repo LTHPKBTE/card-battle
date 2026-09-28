@@ -7,7 +7,8 @@
 // `getScriptId` / `eventOn` / `tavern_events`) 重新实现, 构建产物中不再包含模板代码.
 // 详见 开发说明.md 的「许可与依赖边界」.
 
-import { parse as parse_json5 } from 'json5';
+// json5 是 CJS 包, 连官方的 ESM 构建 (`dist/index.mjs`) 也只有 default 导出, 所以只能用默认导入
+import JSON5 from 'json5';
 import { jsonrepair } from 'jsonrepair';
 
 /**
@@ -101,13 +102,15 @@ export function parseString(content: string): any {
   const like_json = /^[[{]/s.test(content.trimStart());
   const attempts: [string, () => any][] = like_json
     ? [
-        ['JSON5', () => parse_json5(content)],
+        // eslint-disable-next-line import-x/no-named-as-default-member
+        ['JSON5', () => JSON5.parse(content)],
         ['JSON', () => JSON.parse(jsonrepair(content))],
         ['YAML', () => YAML.parse(content, { merge: true })],
       ]
     : [
         ['YAML', () => YAML.parse(content, { merge: true })],
-        ['JSON5', () => parse_json5(content)],
+        // eslint-disable-next-line import-x/no-named-as-default-member
+        ['JSON5', () => JSON5.parse(content)],
         ['JSON', () => JSON.parse(jsonrepair(content))],
       ];
 
