@@ -80,8 +80,8 @@
         <div class="bt-setup-row">
           <label for="bt-player-deck">我方卡组</label>
           <select id="bt-player-deck" v-model="playerDeckId">
-            <option v-for="deck in playerDecks" :key="deck.id" :value="deck.id">
-              {{ deck.名称 || '未命名卡组' }} ({{ deck.卡牌.length }})
+            <option v-for="deck in playerDecks" :key="deck.id" :value="deck.id" :title="deckTitle(deck)">
+              {{ deckLabel(deck) }}
             </option>
           </select>
         </div>
@@ -90,8 +90,8 @@
           <label for="bt-enemy-deck">敌方卡组</label>
           <select id="bt-enemy-deck" v-model="enemyDeckId">
             <option v-if="enemyDecks.length === 0" value="__same__">同我方卡组</option>
-            <option v-for="deck in enemyDecks" :key="deck.id" :value="deck.id">
-              {{ deck.名称 || '未命名卡组' }} ({{ deck.卡牌.length }})
+            <option v-for="deck in enemyDecks" :key="deck.id" :value="deck.id" :title="deckTitle(deck)">
+              {{ deckLabel(deck) }}
             </option>
           </select>
         </div>
@@ -677,8 +677,10 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue';
 
-import { loadDecks, loadDeployedDeck, resolveDeck } from '../卡组/data.ts';
+import { deckIssues, describeDeckIssues, loadDecks, loadDeployedDeck, resolveDeck } from '../卡组/data.ts';
 import type { Deck } from '../卡组/schema.ts';
+import { loadCards } from '../卡牌/data.ts';
+import type { Card } from '../卡牌/schema.ts';
 import {
   battleConfig,
   canPayEnergy,
@@ -1994,10 +1996,27 @@ function onFieldDrop(side: PlayerId, event: DragEvent) {
 // ---------------------------------------------------------------------------
 
 const decks = ref<Deck[]>([]);
+/** 卡牌库快照 (只在开战页用来判断卡组完不完整) */
+const libraryCards = ref<Card[]>([]);
 const playerDecks = computed(() => decks.value.filter(deck => deck.阵营 === '我方'));
 const enemyDecks = computed(() => decks.value.filter(deck => deck.阵营 === '敌方'));
 const playerDeckId = ref('');
 const enemyDeckId = ref('__same__');
+
+/** 卡组在下拉框里的文案: 有卡数据不完整 / 已不在卡牌库就补一个后缀 */
+function deckLabel(deck: Deck): string {
+  const name = deck.名称?.trim() || '未命名卡组';
+  const incomplete = deckIssues(deck, libraryCards.value);
+  const suffix = incomplete.不完整 + incomplete.缺失 > 0 ? ' （不完整）' : '';
+  return `${name} (${deck.卡牌.length})${suffix}`;
+}
+
+/** 下拉框里的悬停说明: 说清哪里不完整 (完整时为空) */
+function deckTitle(deck: Deck): string {
+  const issues = deckIssues(deck, libraryCards.value);
+  const text = describeDeckIssues(issues);
+  return text ? `${text}; 出战时数据不完整的卡照常上场, 已不在卡牌库的会被跳过` : '';
+}
 const hpPlayer = ref(8000);
 const hpEnemy = ref(8000);
 const openingHand = ref(5);
@@ -2633,6 +2652,7 @@ onMounted(async () => {
 
   try {
     decks.value = loadDecks();
+    libraryCards.value = loadCards();
     const deployed = loadDeployedDeck();
     const preferred = deployed?.卡组id ?? '';
     playerDeckId.value = playerDecks.value.some(deck => deck.id === preferred)
