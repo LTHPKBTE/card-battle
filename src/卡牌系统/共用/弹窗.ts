@@ -10,6 +10,7 @@
 //   const { button } = await openDialog({ 标题: '复制卡组', 内容: '…', 按钮: [...] });
 
 import { hexToRgbParts, loadPanelLook } from './外观';
+import { viewportDocument } from './平台';
 
 /** 弹窗按钮 */
 export interface DialogButton {
@@ -40,6 +41,26 @@ export interface DialogInputOptions {
   multiline?: boolean;
 }
 
+/** 下拉框配置 (提供时弹窗里会多一个下拉框) */
+export interface DialogSelectOptions {
+  /** 下拉框前面的标签 */
+  标签?: string;
+  /** 选项 (`说明` 会作为悬浮提示) */
+  选项: { value: string; label: string; 说明?: string }[];
+  /** 初始选中的值 (省略时选第一个) */
+  默认?: string;
+}
+
+/** 勾选框配置 (提供时弹窗里会多一个勾选框) */
+export interface DialogCheckboxOptions {
+  /** 勾选框文案 */
+  标签: string;
+  /** 文案下方的补充说明 */
+  说明?: string;
+  /** 初始是否勾上 (默认不勾) */
+  默认?: boolean;
+}
+
 export interface DialogOptions {
   标题?: string;
   /** 内容, 支持换行 */
@@ -48,6 +69,10 @@ export interface DialogOptions {
   按钮?: DialogButton[];
   /** 需要用户输入时提供 */
   输入?: DialogInputOptions;
+  /** 需要用户选一项时提供 */
+  选择?: DialogSelectOptions;
+  /** 需要用户确认一个选项时提供 */
+  勾选?: DialogCheckboxOptions;
   /** 按 Esc / 点遮罩关闭时返回的值, 默认空字符串 */
   取消值?: string;
 }
@@ -57,6 +82,10 @@ export interface DialogResult {
   button: string;
   /** 输入框内容 (没有输入框时为空字符串) */
   input: string;
+  /** 下拉框选中的值 (没有下拉框时为空字符串) */
+  选择: string;
+  /** 勾选框是否勾上 (没有勾选框时为 false) */
+  勾选: boolean;
 }
 
 const STYLE_ID = 'card-system-dialog-style';
@@ -126,6 +155,49 @@ const DIALOG_CSS = `
 .csdlg-input:focus {
   border-color: #89b4fa;
 }
+.csdlg-field {
+  display: block;
+  margin-bottom: 14px;
+}
+.csdlg-field-label {
+  display: block;
+  margin-bottom: 6px;
+  color: #c9cad6;
+  font-size: 0.9em;
+}
+.csdlg-select {
+  box-sizing: border-box;
+  width: 100%;
+  padding: 8px 10px;
+  border: 1px solid rgb(255 255 255 / 0.16);
+  border-radius: 8px;
+  background: rgb(0 0 0 / 0.3);
+  color: #f0f0f5;
+  font: inherit;
+  outline: none;
+}
+.csdlg-select:focus {
+  border-color: #89b4fa;
+}
+.csdlg-check {
+  display: flex;
+  gap: 8px;
+  align-items: flex-start;
+  margin-bottom: 14px;
+  cursor: pointer;
+}
+.csdlg-check input {
+  margin-top: 3px;
+  accent-color: #89b4fa;
+}
+.csdlg-check-text {
+  line-height: 1.5;
+}
+.csdlg-check-note {
+  display: block;
+  color: #9a9bab;
+  font-size: 0.86em;
+}
 .csdlg-actions {
   display: flex;
   flex-wrap: wrap;
@@ -180,19 +252,6 @@ const DIALOG_CSS = `
 
 /** 关闭当前弹窗 (把它的 Promise 按「取消」结束) */
 let activeClose: (() => void) | null = null;
-
-/** 面板渲染在主文档里, 弹窗也必须挂到同一个文档, 否则会被 0x0 的 iframe 裁掉 */
-function viewportDocument(): Document {
-  try {
-    const parent = window.parent;
-    if (parent && parent !== window && parent.document) {
-      return parent.document;
-    }
-  } catch {
-    /* 跨域等异常环境回退到自身 */
-  }
-  return document;
-}
 
 /** 样式只注入一次 (弹窗在哪个文档, 就注入到哪个文档) */
 function ensureStyle(doc: Document): void {
@@ -263,6 +322,52 @@ export function openDialog(options: DialogOptions = {}): Promise<DialogResult> {
       box.appendChild(input);
     }
 
+    let select: HTMLSelectElement | null = null;
+    if (options.选择) {
+      const field = doc.createElement('label');
+      field.className = 'csdlg-field';
+      if (options.选择.标签) {
+        const label = doc.createElement('span');
+        label.className = 'csdlg-field-label';
+        label.textContent = options.选择.标签;
+        field.appendChild(label);
+      }
+      select = doc.createElement('select');
+      select.className = 'csdlg-select';
+      for (const option of options.选择.选项) {
+        const element = doc.createElement('option');
+        element.value = option.value;
+        element.textContent = option.label;
+        if (option.说明) {
+          element.title = option.说明;
+        }
+        select.appendChild(element);
+      }
+      select.value = options.选择.默认 ?? options.选择.选项[0]?.value ?? '';
+      field.appendChild(select);
+      box.appendChild(field);
+    }
+
+    let checkbox: HTMLInputElement | null = null;
+    if (options.勾选) {
+      const field = doc.createElement('label');
+      field.className = 'csdlg-check';
+      checkbox = doc.createElement('input');
+      checkbox.type = 'checkbox';
+      checkbox.checked = options.勾选.默认 === true;
+      const text = doc.createElement('span');
+      text.className = 'csdlg-check-text';
+      text.textContent = options.勾选.标签;
+      if (options.勾选.说明) {
+        const note = doc.createElement('span');
+        note.className = 'csdlg-check-note';
+        note.textContent = options.勾选.说明;
+        text.appendChild(note);
+      }
+      field.append(checkbox, text);
+      box.appendChild(field);
+    }
+
     const actions = doc.createElement('div');
     actions.className = 'csdlg-actions';
     box.appendChild(actions);
@@ -283,7 +388,7 @@ export function openDialog(options: DialogOptions = {}): Promise<DialogResult> {
         activeClose = null;
       }
       mask.remove();
-      resolve({ button: value, input: input?.value ?? '' });
+      resolve({ button: value, input: input?.value ?? '', 选择: select?.value ?? '', 勾选: checkbox?.checked === true });
     };
     const close = () => finish(cancel_value);
     activeClose = close;
@@ -358,8 +463,8 @@ export function openDialog(options: DialogOptions = {}): Promise<DialogResult> {
     mask.appendChild(box);
     doc.body.appendChild(mask);
 
-    // 有输入框就先聚焦输入框, 否则聚焦主要按钮
-    (input ?? primary_element)?.focus();
+    // 有输入框/下拉框就先聚焦它, 否则聚焦主要按钮
+    (input ?? select ?? primary_element)?.focus();
   });
 }
 
@@ -389,24 +494,32 @@ export async function alertDialog(options: DialogOptions & { 确定文案?: stri
 }
 
 /**
- * 危险操作确认弹窗: 确定按钮先禁用一段时间, 倒数完才亮起.
+ * 带字段的确认弹窗: 可以带上「下拉框 / 勾选框」收集用户的附加选择, 返回完整结果
+ * (`button` / `input` / `选择` / `勾选`).
  *
- * 用于「清空数据」这类不可撤销的操作 —— 手快连点两下也删不掉,
- * 必须真的看清楚警告并等完倒计时 (默认 5 秒).
+ * `等待毫秒` 大于 0 时确定按钮先禁用一段时间才亮起 —— 用于「清空 / 恢复」这类
+ * 不可撤销的操作, 手快连点两下也做不掉, 必须看清警告并等完倒计时.
  */
-export async function delayedConfirmDialog(
-  options: DialogOptions & { 确认文案?: string; 取消文案?: string; 等待毫秒?: number },
-): Promise<boolean> {
-  const result = await openDialog({
+export async function askDialog(
+  options: DialogOptions & { 确认文案?: string; 取消文案?: string; 等待毫秒?: number; 危险?: boolean },
+): Promise<DialogResult> {
+  return openDialog({
     标题: options.标题,
     内容: options.内容,
     取消值: options.取消值,
+    选择: options.选择,
+    勾选: options.勾选,
     按钮: [
       { value: 'cancel', label: options.取消文案 ?? '取消' },
-      { value: 'confirm', label: options.确认文案 ?? '确定', primary: true, danger: true, delay: options.等待毫秒 ?? 5000 },
+      {
+        value: 'confirm',
+        label: options.确认文案 ?? '确定',
+        primary: true,
+        danger: options.危险 === true,
+        delay: options.等待毫秒,
+      },
     ],
   });
-  return result.button === 'confirm';
 }
 
 /** 输入弹窗: 取消时返回 null */

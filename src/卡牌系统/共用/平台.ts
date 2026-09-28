@@ -10,6 +10,30 @@
 import { parse as parse_json5 } from 'json5';
 import { jsonrepair } from 'jsonrepair';
 
+/**
+ * 用户真正在看的那个窗口.
+ *
+ * 脚本跑在隐藏的 0x0 iframe 里, iframe 自身的宽度恒为 0, 用它量窄屏会永远命中;
+ * 面板 / 弹窗 / 下载链接也都得挂在主窗口的文档里, 否则会被 0x0 的 iframe 裁掉.
+ * 跨域等异常环境下回退到自身, 至少不会报错.
+ */
+export function viewportWindow(): Window {
+  try {
+    const parent = window.parent;
+    if (parent && parent !== window && parent.document) {
+      return parent;
+    }
+  } catch {
+    /* 跨域等异常环境回退到自身 */
+  }
+  return window;
+}
+
+/** 用户真正在看的那个文档 (面板 / 弹窗 / 临时元素都挂在这里) */
+export function viewportDocument(): Document {
+  return viewportWindow().document;
+}
+
 /** 建一个挂了本脚本 id 的元素: 面板整块挂在酒馆页面上, 带 id 才认得出是谁塞的、才能干净卸掉 */
 export function createScriptIdDiv(): JQuery<HTMLDivElement> {
   return $('<div>').attr('script_id', getScriptId()) as JQuery<HTMLDivElement>;

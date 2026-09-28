@@ -146,6 +146,7 @@ import { computed, onUnmounted, reactive, ref } from 'vue';
 import PanelLookSettings from '../共用/PanelLookSettings.vue';
 import { clearNotifyHistory, notifyHistory, type NotifyRecord } from '../共用/通知';
 import { flushPanelLookSave, loadPanelLook, onPanelLookChanged, panelLookStyle, type PanelLook } from '../共用/外观';
+import { PANEL_CLOSE_EVENTS } from '../共用/面板';
 import { formatSize } from '../共用/体积';
 import {
   DEBUG_LIST_LIMIT,
@@ -156,7 +157,7 @@ import {
   type ScopeKey,
 } from './数据';
 
-const CLOSE_EVENT = 'card-debug-close';
+const CLOSE_EVENT = PANEL_CLOSE_EVENTS.调试;
 const NARROW_MAX_WIDTH = 900;
 /** 悬浮的折叠条占多高 (叠两条时用来错位) */
 const FOLD_BAR_HEIGHT = 34;

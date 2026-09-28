@@ -718,6 +718,7 @@ import {
   type Notice,
   type NoticeLevel,
 } from '../共用/浮动提示.ts';
+import { PANEL_CLOSE_EVENTS } from '../共用/面板';
 import BattleCard, { type BattleCardStatus } from './components/BattleCard.vue';
 import CardDetail from './components/CardDetail.vue';
 import DebugViewer from './components/DebugViewer.vue';
@@ -778,7 +779,7 @@ import {
 } from './同步.ts';
 import type { BattleWorldbookStatus } from './世界书.ts';
 
-const CLOSE_EVENT = 'card-battle-close';
+const CLOSE_EVENT = PANEL_CLOSE_EVENTS.战斗;
 const NARROW_MAX_WIDTH = 900;
 
 /** 当前选中的卡 + 选中的动作 (effect_id 为 null 表示普通攻击 / 上场) */
