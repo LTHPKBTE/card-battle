@@ -1393,29 +1393,7 @@ onBeforeUnmount(() => {
   font-size: 0.72em;
   padding: 2px 6px;
   border-radius: 5px;
-  color: #07111f;
-}
-
-.rarity-N {
-  background: #b0bec5;
-}
-
-.rarity-R {
-  background: #81d4fa;
-}
-
-.rarity-SR {
-  background: linear-gradient(45deg, #ce93d8, #ab47bc);
-  color: #fff;
-}
-
-.rarity-SSR {
-  background: linear-gradient(45deg, #ffd700, #ffb74d);
-  color: #442b00;
-}
-
-.rarity-UR {
-  @include rare-shimmer;
+  @include rarity-tone;
 }
 
 .dk-empty {

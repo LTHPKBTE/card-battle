@@ -14,7 +14,7 @@
         class="pv-row"
         @click="emit('inspect', card)"
       >
-        <span class="pv-rarity" :class="`pv-r-${card.rarity}`">{{ card.rarity }}</span>
+        <span class="pv-rarity" :class="`rarity-${card.rarity}`">{{ card.rarity }}</span>
         <span class="pv-name" :title="card.name">{{ card.name }}</span>
         <span class="pv-stat">攻 {{ card.current.atk }}</span>
         <span class="pv-stat">盾 {{ card.current.shield }}/{{ card.current.shield_max }}</span>
@@ -59,6 +59,8 @@ const emit = defineEmits<{ close: []; inspect: [card: CardInstance]; play: [card
 </script>
 
 <style scoped>
+@use '../../共用/稀有度' as *;
+
 .pv-hint {
   margin: 0 0 10px;
   color: var(--bt-text-secondary, #a0a0b0);
@@ -92,25 +94,9 @@ const emit = defineEmits<{ close: []; inspect: [card: CardInstance]; play: [card
   min-width: 2.2em;
   padding: 1px 5px;
   border-radius: 5px;
-  background: rgb(137 180 250 / 0.18);
-  color: var(--bt-accent, #89b4fa);
   font-size: 0.82em;
   text-align: center;
-}
-
-.pv-r-UR {
-  background: rgb(245 194 231 / 0.22);
-  color: #f5c2e7;
-}
-
-.pv-r-SSR {
-  background: rgb(249 226 175 / 0.2);
-  color: #f9e2af;
-}
-
-.pv-r-SR {
-  background: rgb(166 227 161 / 0.18);
-  color: #a6e3a1;
+  @include rarity-tone;
 }
 
 .pv-name {

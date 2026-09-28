@@ -241,26 +241,7 @@ function hpPercent(): string {
   border-radius: 4px;
   font-size: 10px;
   font-weight: 700;
-  background: rgb(255 255 255 / 0.18);
-}
-
-.bc-rarity.rarity-R {
-  background: linear-gradient(45deg, #7ec8e3, #4a90a4);
-  color: #04212b;
-}
-
-.bc-rarity.rarity-SR {
-  background: linear-gradient(45deg, #ce93d8, #ab47bc);
-  color: #fff;
-}
-
-.bc-rarity.rarity-SSR {
-  background: linear-gradient(45deg, #ffd700, #ffb74d);
-  color: #442b00;
-}
-
-.bc-rarity.rarity-UR {
-  @include rare-shimmer;
+  @include rarity-tone;
 }
 
 .bc-name {

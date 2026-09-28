@@ -192,7 +192,7 @@ const machineYaml = computed(() => (props.card ? machineEffectToYaml(props.card.
   font-weight: 700;
   padding: 2px 8px;
   border-radius: 6px;
-  color: #07111f;
+  @include rarity-tone;
 }
 
 .faction-badge {
@@ -213,29 +213,6 @@ const machineYaml = computed(() => (props.card ? machineEffectToYaml(props.card.
 
 .faction-敌方 {
   color: #f38ba8;
-}
-
-.rarity-N {
-  background: #b0bec5;
-}
-
-.rarity-R {
-  background: #81d4fa;
-}
-
-.rarity-SR {
-  background: linear-gradient(45deg, #ce93d8, #ab47bc);
-  color: #fff;
-}
-
-.rarity-SSR {
-  background: linear-gradient(45deg, #ffd700, #ffb74d);
-  color: #442b00;
-}
-
-/* UR 角标: 半透明本体 + 身后一圈转着的彩虹条纹, 见 共用/稀有度.scss */
-.rarity-UR {
-  @include rare-shimmer;
 }
 
 .card.rarity-bg-SR {
