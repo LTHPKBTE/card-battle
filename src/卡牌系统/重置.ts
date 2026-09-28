@@ -1,153 +1,234 @@
-// 卡牌系统 - 数据重置 (脚本按钮「清空角色数据」)
+// 卡牌系统 - 清空数据 (「数据」面板里的「清空」一段)
 //
-// 清空范围 (不可撤销):
-//   1. 角色卡变量「卡牌库」  —— 这个角色身上的全部卡牌;
-//   2. 当前聊天变量「卡组」  —— 这个对话里的全部卡组与出战记录;
-//   3. 当前聊天变量「战斗」  —— 这个对话里的战斗快照与 AI 简报.
+// 可以单独勾选要清哪一块:
+//   · 角色卡里的卡牌 / 卡组 —— 这张角色卡的每个对话都受影响;
+//   · 当前对话的卡组 / 战斗记录 —— 只影响这一个对话.
+// 清空不可撤销, 所以确定按钮要倒数 5 秒才亮.
 //
-// 为什么不是直接 `replaceVariables({}, { type: 'character' })`:
-// 角色卡变量是所有脚本共用的, 整个清掉会连带删掉别的脚本写进去的数据,
-// 所以这里只删卡牌系统自己的命名空间 (效果上等同于「清空当前角色的卡牌与卡组数据」).
+// 只删本脚本自己的命名空间 (卡牌库 / 卡组 / 战斗), 同一层里别的脚本写进去的数据一律不碰 ——
+// 这也是这里没有「清空整个作用域」的原因.
+//
+// 全局层不进这个列表: 它的数据在任何角色卡、任何对话下都能改, 误删一下就是全没了;
+// 要删单个卡牌 / 卡组, 用卡牌库与卡组面板里的批量删除更稳妥.
 //
 // 这一层接触酒馆全局, 所以不做 node 测试 (弹窗逻辑在 共用/弹窗.ts, 是纯 DOM).
 
-import { hasCharacter, loadLayerLibrary } from './卡牌/data';
-import { CARD_LIBRARY_KEY } from './卡牌/schema';
-import { hasChat, loadLayerDeckStore } from './卡组/data';
+import { askDialog } from './共用/弹窗';
+import { closePanelsBut } from './共用/面板';
+import { deleteLayerKey } from './共用/层级';
+import { clearCardLayer, hasCharacter, loadLayerLibrary } from './卡牌/data';
+import { clearDeckLayer, hasChat, loadLayerDeckStore } from './卡组/data';
 import { BATTLE_CHAT_KEY, DECK_CHAT_KEY } from './卡组/schema';
-import { delayedConfirmDialog } from './共用/弹窗';
-import { readLayer } from './共用/层级';
 import { endBattleSession, isBattleRunning, resetBattleCache } from './战斗/同步';
-
-/** 清空时会一并移除的聊天变量命名空间 */
-const CHAT_KEYS: readonly string[] = [DECK_CHAT_KEY, BATTLE_CHAT_KEY];
 
 /** 确定按钮禁用多久 (毫秒) */
 export const RESET_WAIT_MS = 5000;
 
-/** 即将被清空的内容 (只用于弹窗文案) */
-export interface ResetSummary {
-  /** 角色卡层里的卡牌张数 */
-  cards: number;
-  /** 当前对话里的卡组数量 */
-  decks: number;
-  /** 是否有进行中的战斗 */
-  battle: boolean;
-  /** 全局层里的卡牌张数 (不属于本次清空, 只拿来提醒) */
-  global_cards: number;
-  /** 全局层里的卡组数量 (同上) */
-  global_decks: number;
+/** 可单独清空的区域 */
+export const RESET_KEYS = ['角色卡卡牌', '角色卡卡组', '对话卡组', '对话战斗'] as const;
+export type ResetKey = (typeof RESET_KEYS)[number];
+
+/** 区域名的短称呼 (用于提示信息与确认文案) */
+export const RESET_LABELS: Record<ResetKey, string> = {
+  角色卡卡牌: '角色卡的卡牌',
+  角色卡卡组: '角色卡的卡组',
+  对话卡组: '当前对话的卡组',
+  对话战斗: '当前对话的战斗记录',
+};
+
+/** 清空面板上的一行 */
+export interface ResetRegion {
+  key: ResetKey;
+  /** 一行标题 */
+  标题: string;
+  /** 这一块在哪 (面板按这个分两栏摆) */
+  范围: '角色卡' | '当前对话';
+  /** 现在能不能清 (需要对应的数据来源可用) */
+  可用: boolean;
+  /** 不能清的原因 (可用时是空串) */
+  原因: string;
+  /** 里面现在有什么 (一句说明) */
+  内容: string;
+  /** 现在是不是空的 */
+  空: boolean;
+  /** 清掉会影响谁 */
+  影响: string;
 }
 
-/** 统计将被清空的内容; 读变量失败时按空处理 (反正要删) */
-export function summarizeReset(): ResetSummary {
-  let cards = 0;
-  let decks = 0;
-  let global_cards: number;
-  let global_decks: number;
+/** 数一下某一层里有多少卡牌 */
+function countLayerCards(layer: '聊天' | '角色卡' | '全局'): number {
   try {
-    if (hasCharacter()) {
-      cards = _.values(loadLayerLibrary('角色卡').卡牌).length;
-    }
+    return Object.keys(loadLayerLibrary(layer).卡牌).length;
   } catch {
-    cards = 0;
+    return 0;
   }
-  try {
-    if (hasChat()) {
-      decks = _.values(loadLayerDeckStore('聊天').卡组).length;
-    }
-  } catch {
-    decks = 0;
-  }
-  try {
-    const library = readLayer('全局', CARD_LIBRARY_KEY);
-    global_cards = _.isPlainObject(library) ? _.values((library as any).卡牌).length : 0;
-  } catch {
-    global_cards = 0;
-  }
-  try {
-    const store = readLayer('全局', DECK_CHAT_KEY);
-    global_decks = _.isPlainObject(store) ? _.values((store as any).卡组).length : 0;
-  } catch {
-    global_decks = 0;
-  }
-  return { cards, decks, battle: isBattleRunning(), global_cards, global_decks };
 }
 
-/** 组装警告弹窗的正文 */
-export function resetConfirmText(summary = summarizeReset()): string {
+/** 数一下某一层里有多少卡组 */
+function countLayerDecks(layer: '聊天' | '角色卡' | '全局'): number {
+  try {
+    return Object.keys(loadLayerDeckStore(layer).卡组).length;
+  } catch {
+    return 0;
+  }
+}
+
+/** 现在有没有数据来源 (角色卡或对话) */
+export function hasAnySource(): boolean {
+  try {
+    return hasCharacter() || hasChat();
+  } catch {
+    return false;
+  }
+}
+
+/** 列出现在可以清的区域; 读变量失败时按空处理 (反正要删) */
+export function resetRegions(): ResetRegion[] {
+  const 有角色卡 = (() => {
+    try {
+      return hasCharacter();
+    } catch {
+      return false;
+    }
+  })();
+  const 有对话 = (() => {
+    try {
+      return hasChat();
+    } catch {
+      return false;
+    }
+  })();
+
+  const 角色卡卡牌 = 有角色卡 ? countLayerCards('角色卡') : 0;
+  const 角色卡卡组 = 有角色卡 ? countLayerDecks('角色卡') : 0;
+  const 对话卡组 = 有对话 ? countLayerDecks('聊天') : 0;
+  const 战斗中 = 有对话 && isBattleRunning();
+
+  return [
+    {
+      key: '角色卡卡牌',
+      标题: '卡牌',
+      范围: '角色卡',
+      可用: 有角色卡,
+      原因: '请先进入一张角色卡',
+      内容: 角色卡卡牌 ? `${角色卡卡牌} 张卡牌` : '没有卡牌',
+      空: 角色卡卡牌 === 0,
+      影响: '这张角色卡的每个对话都会少掉这些卡',
+    },
+    {
+      key: '角色卡卡组',
+      标题: '卡组',
+      范围: '角色卡',
+      可用: 有角色卡,
+      原因: '请先进入一张角色卡',
+      内容: 角色卡卡组 ? `${角色卡卡组} 套卡组` : '没有卡组',
+      空: 角色卡卡组 === 0,
+      影响: '这张角色卡的每个对话都会少掉这些卡组',
+    },
+    {
+      key: '对话卡组',
+      标题: '卡组',
+      范围: '当前对话',
+      可用: 有对话,
+      原因: '请先进入一个对话',
+      内容: 对话卡组 ? `${对话卡组} 套卡组` : '没有卡组',
+      空: 对话卡组 === 0,
+      影响: '只影响这一个对话 (出战记录也会失去指向)',
+    },
+    {
+      key: '对话战斗',
+      标题: '战斗记录',
+      范围: '当前对话',
+      可用: 有对话,
+      原因: '请先进入一个对话',
+      内容: 战斗中 ? '有一场进行中的战斗' : '战斗记录',
+      空: !战斗中,
+      影响: '只影响这一个对话 (战斗会直接结束)',
+    },
+  ];
+}
+
+/** 组装确认弹窗的正文 */
+export function resetConfirmText(keys: readonly ResetKey[]): string {
+  const regions = resetRegions();
   const lines = ['此操作不可撤销, 将清空:'];
-
-  if (hasCharacter()) {
-    lines.push(`· 角色卡变量「${CARD_LIBRARY_KEY}」: ${summary.cards} 张卡牌`);
-  } else {
-    lines.push('· 角色卡变量「卡牌库」: (当前没有进入角色卡)');
+  for (const key of RESET_KEYS) {
+    if (!keys.includes(key)) {
+      continue;
+    }
+    const region = regions.find(item => item.key === key);
+    lines.push(`· ${RESET_LABELS[key]}${region && !region.空 ? ` —— ${region.内容}` : ''}`);
   }
-
-  if (hasChat()) {
-    lines.push(`· 当前对话变量「${DECK_CHAT_KEY}」: ${summary.decks} 套卡组`);
-    lines.push(`· 当前对话变量「${BATTLE_CHAT_KEY}」: ${summary.battle ? '含一场进行中的战斗' : '战斗记录'}`);
-  } else {
-    lines.push('· 当前对话变量「卡组」「战斗」: (当前没有进入对话)');
-  }
-
   lines.push('');
-  if (summary.global_cards || summary.global_decks) {
-    lines.push(
-      `全局范围的卡牌 / 卡组不属于本次清空: 现有 ${summary.global_cards} 张卡牌、${summary.global_decks} 套卡组仍然可用。`,
-    );
-  }
-  lines.push('其他脚本写在角色卡变量 / 聊天变量里的数据不受影响。');
+  lines.push('同一层里其他脚本写进去的数据不受影响。');
   lines.push('已打开的卡牌库 / 卡组 / 战斗面板会被关闭。');
   lines.push('确定按钮在 5 秒后才会亮起。');
   return lines.join('\n');
 }
 
 /**
- * 弹警告 → 等 5 秒 → 返回是否点了确定.
+ * 真的执行清空 (调用方负责先关面板).
  *
- * 只负责确认, 不碰数据 —— 调用方需要在确认之后、清空之前先关掉面板
- * (面板卸载时会把编辑中的草稿落盘, 顺序反了会把刚删掉的卡又写回来).
+ * 先结束战斗会话再删变量: 否则下一次 `syncBattle()` 会把刚删掉的战斗快照写回变量里.
+ * 卡组的出战快照与出战选择都在本脚本自己的命名空间里, 不涉及别的数据.
  */
-export function confirmClearCardData(): Promise<boolean> {
-  return delayedConfirmDialog({
-    标题: '清空角色卡牌与卡组数据',
-    内容: resetConfirmText(),
-    确认文案: '清空数据',
-    取消文案: '取消',
-    等待毫秒: RESET_WAIT_MS,
-  });
+export async function clearRegions(keys: readonly ResetKey[]): Promise<void> {
+  const 有对话 = (() => {
+    try {
+      return hasChat();
+    } catch {
+      return false;
+    }
+  })();
+
+  if (keys.includes('对话战斗')) {
+    try {
+      await endBattleSession();
+    } catch {
+      /* 读不到变量时忽略: 下面照样把命名空间删掉 */
+    }
+  }
+  resetBattleCache();
+
+  if (keys.includes('角色卡卡牌')) {
+    clearCardLayer('角色卡');
+  }
+  if (keys.includes('角色卡卡组')) {
+    clearDeckLayer('角色卡');
+  }
+  if (有对话 && keys.includes('对话卡组')) {
+    deleteLayerKey('聊天', DECK_CHAT_KEY);
+  }
+  if (有对话 && keys.includes('对话战斗')) {
+    deleteLayerKey('聊天', BATTLE_CHAT_KEY);
+  }
 }
 
 /**
- * 真正执行清空.
+ * 完整的清空流程: 确认 (倒数 5 秒) → 关掉别的面板 → 清空.
  *
- * 先丢掉内存里的战斗会话与卡牌提供者缓存, 再删变量 ——
- * 否则下一次 `syncBattle()` 会把刚删掉的战斗快照原样写回去.
+ * 顺序很关键: 面板卸载时会把编辑中的草稿落盘, 先删变量再关面板会把刚删掉的卡写回来.
  */
-export async function clearCardSystemData(): Promise<void> {
-  await endBattleSession();
-  resetBattleCache();
-
-  if (hasCharacter()) {
-    updateVariablesWith(
-      variables => {
-        _.unset(variables, CARD_LIBRARY_KEY);
-        return variables;
-      },
-      { type: 'character' },
-    );
+export async function runClear(keys: readonly ResetKey[], 标题 = '清空数据'): Promise<boolean> {
+  const 选中 = RESET_KEYS.filter(key => keys.includes(key));
+  if (!选中.length) {
+    toastr.warning('还没有勾选要清空的区域', 标题);
+    return false;
   }
 
-  if (hasChat()) {
-    updateVariablesWith(
-      variables => {
-        for (const key of CHAT_KEYS) {
-          _.unset(variables, key);
-        }
-        return variables;
-      },
-      { type: 'chat' },
-    );
+  const result = await askDialog({
+    标题: '清空数据',
+    内容: resetConfirmText(选中),
+    确认文案: '清空',
+    危险: true,
+    等待毫秒: RESET_WAIT_MS,
+  });
+  if (result.button !== 'confirm') {
+    return false;
   }
+
+  closePanelsBut('数据');
+  await clearRegions(选中);
+  toastr.success(`已清空: ${选中.map(key => RESET_LABELS[key]).join('、')}`, 标题);
+  return true;
 }
